@@ -19,6 +19,9 @@ function back() {
     <label>服务器地址</label>
     <input v-model="state.serverInput" />
     <button class="primary" @click="save">保存服务器地址</button>
+    <button :disabled="state.discovering" @click="send({ type: 'Discover' })">
+      {{ state.discovering ? "正在发现…" : "自动发现服务端" }}
+    </button>
 
     <template v-if="state.user">
       <div class="sep"></div>

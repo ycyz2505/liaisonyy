@@ -1,8 +1,45 @@
 <script setup lang="ts">
-import { computed, onMounted } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { send } from "../api";
-import { formatTime, state } from "../store";
+import { formatTime, showError, state } from "../store";
 import type { ReportDto } from "../types";
+
+const updVersion = ref("");
+const updMin = ref("");
+const updSig = ref("");
+const updData = ref("");
+
+function pickUpdate(e: Event) {
+  const input = e.target as HTMLInputElement;
+  const f = input.files?.[0];
+  if (!f) return;
+  if (f.size > 100 * 1024 * 1024) {
+    showError("更新包最大 100 MB");
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    updData.value = String(reader.result ?? "");
+  };
+  reader.readAsDataURL(f);
+  input.value = "";
+}
+
+function uploadUpdate() {
+  if (!updVersion.value || !updMin.value || !updSig.value || !updData.value) {
+    showError("请填写版本号、最低版本、签名并选择更新包");
+    return;
+  }
+  send({
+    type: "AdminUpdatePackage",
+    data: {
+      data: updData.value,
+      version: updVersion.value.trim(),
+      min_client: updMin.value.trim(),
+      signature: updSig.value.trim(),
+    },
+  });
+}
 
 const isRoot = computed(() => state.user?.role === "root");
 
@@ -330,6 +367,23 @@ function back() {
       <div class="hint">
         恢复会在服务端下次启动时执行；当前数据先移到 pre-restore-* 目录。
       </div>
+
+      <div class="sep"></div>
+      <h3>发布客户端更新</h3>
+      <div class="hint">
+        先用 update-sign 计算 sha256 并签名；服务端需配置 LIAISONYY_UPDATE_PUBKEY。
+      </div>
+      <label>版本号</label>
+      <input v-model="updVersion" placeholder="0.2.0" />
+      <label>最低可用版本</label>
+      <input v-model="updMin" placeholder="0.2.0" />
+      <label>签名（base64）</label>
+      <input v-model="updSig" placeholder="Ed25519 签名" />
+      <label>更新包（liaisonyy.exe）</label>
+      <input type="file" accept=".exe,application/octet-stream" @change="pickUpdate" />
+      <button :disabled="!updData" style="margin-top: 8px" @click="uploadUpdate">
+        上传并发布
+      </button>
     </template>
 
     <div class="sep"></div>

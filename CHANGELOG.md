@@ -64,6 +64,17 @@
 - **转班后重封**：学生客户端检测到班级变化后，自动用新班托管公钥重新封装 `user_priv_class` / `profile_class`（`POST /me/rekey-class`），保证新班管理员仍可恢复。
 - 新增 e2e 覆盖：看板、审计筛选/校验/CSV、备份创建与恢复标记、总管理员与新班管理员解密、转班重封。
 
+### 传输安全、发现与自动更新
+
+- **TLS 指纹固定（TOFU）**：客户端改用 rustls，自定义证书校验器；首次连接记录服务端证书 SHA-256（按 `host:port` 存入 `settings.json` 的 `tls_pins`），之后指纹变化直接拒绝连接并提示可能存在中间人攻击。
+- **UDP 服务发现**：服务端监听 `47821/udp` 响应 `LIAISONYY_DISCOVER_V1`；客户端广播 + 本机探测，1 个服务端自动填入并连接，多个服务端阻断并提示先联系管理员，0 个则提示手动输入。
+- **签名自动更新**：
+  - 新增 `update-sign` 工具：`keygen` / `sha256 <file>` / `sign <version> <min_client> <sha256> <private>`。
+  - 服务端 `POST /admin/update/package`（总管理员）校验 Ed25519 签名后保存更新包与清单；`GET /update/manifest`、`GET /update/package` 分发。
+  - 客户端启动时校验清单签名与版本；强制更新由 `min_client` 控制；下载后校验 SHA-256，写入 `liaisonyy-new.exe` 并由批处理在退出后替换、重启。
+  - 未在构建时设置 `LIAISONYY_UPDATE_PUBKEY` 的客户端不会启用更新；服务端未设置该环境变量时拒绝上传更新包。
+- 新增 e2e 覆盖：UDP 发现响应、签名更新包上传/清单/下载、错误签名被拒。
+
 ### 文档
 
 - 设计稿升级到 v0.7（进行中），补充网络时间与敏感表单清理。

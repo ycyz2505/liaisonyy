@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { onMounted } from "vue";
 import { send } from "../api";
 import { state } from "../store";
 import type { ClassInfo } from "../types";
@@ -8,6 +9,12 @@ function connect() {
   if (!url) return;
   send({ type: "SetServer", data: url });
   send({ type: "Bootstrap" });
+}
+
+function discover() {
+  state.discovering = true;
+  state.discovered = [];
+  send({ type: "Discover" });
 }
 
 function choose(c: ClassInfo) {
@@ -24,6 +31,12 @@ function adminLogin() {
   state.loginInput = "";
   state.page = "Login";
 }
+
+onMounted(() => {
+  if (!state.bootstrap && /127\.0\.0\.1|localhost/.test(state.serverInput)) {
+    discover();
+  }
+});
 </script>
 
 <template>
@@ -33,6 +46,19 @@ function adminLogin() {
     <label>服务端地址</label>
     <input v-model="state.serverInput" placeholder="https://127.0.0.1:47820" />
     <button class="primary" @click="connect">连接服务端</button>
+    <button :disabled="state.discovering" @click="discover">
+      {{ state.discovering ? "正在发现…" : "自动发现服务端" }}
+    </button>
+
+    <div v-if="state.discovered.length > 1" class="err" style="margin-top: 8px">
+      发现多个服务端，可能有人在冒充。请先联系管理员确认，再手动填写正确地址。
+      <div v-for="s in state.discovered" :key="s.url" class="small">
+        {{ s.name }} · {{ s.url }}
+      </div>
+    </div>
+    <div v-else-if="state.discovered.length === 1" class="hint">
+      已发现：{{ state.discovered[0].name }}（{{ state.discovered[0].url }}）
+    </div>
 
     <template v-if="state.bootstrap">
       <p class="muted small">

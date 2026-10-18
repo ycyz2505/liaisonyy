@@ -1,4 +1,5 @@
 use liaisonyy_core::*;
+use ed25519_dalek::Signer;
 use serde_json::{json, Value};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -154,6 +155,8 @@ fn e2e_core_flow() {
     }
     assert!(port > 0, "no free port");
     let exe = env!("CARGO_BIN_EXE_liaisonyy-server");
+    let upd_sk = ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng);
+    std::env::set_var("LIAISONYY_UPDATE_PUBKEY", b64e(upd_sk.verifying_key().as_bytes()));
     let _guard = ServerGuard(
         Command::new(exe)
             .args(["--data-dir", dir.to_str().unwrap(), "--port", &port.to_string()])
@@ -815,6 +818,42 @@ fn e2e_core_flow() {
         json!({}),
     );
     assert!(dir.join("restore_request.txt").exists());
+
+    // signed client update: upload, manifest, package, bad signature rejected
+    let fake = b"FAKE-EXE-BYTES";
+    let fake_sha = sha256_b64(fake);
+    let sig_msg = format!("liaisonyy-update-v1|9.9.9|9.9.9|{fake_sha}");
+    let sig = b64e(&upd_sk.sign(sig_msg.as_bytes()).to_bytes());
+    let man = post(
+        &a,
+        &format!("{base}/api/v1/admin/update/package"),
+        Some(&root_token),
+        json!({"data": b64e(fake), "version": "9.9.9", "min_client": "9.9.9", "signature": sig}),
+    );
+    assert_eq!(man["version"], "9.9.9");
+    let man2 = get(&a, &format!("{base}/api/v1/update/manifest"), None);
+    assert_eq!(man2["files"]["windows"]["sha256"], fake_sha);
+    let (st, _mime, pkg) = get_bytes(&a, &format!("{base}/api/v1/update/package"));
+    assert_eq!(st, 200);
+    assert_eq!(pkg.as_slice(), fake.as_slice());
+    let (code, _) = call_status(
+        &a,
+        "POST",
+        &format!("{base}/api/v1/admin/update/package"),
+        Some(&root_token),
+        Some(json!({"data": b64e(fake), "version": "9.9.10", "min_client": "9.9.10", "signature": b64e(&[0u8; 64])})),
+    );
+    assert_eq!(code, 400);
+
+    // UDP discovery responder
+    let us = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    us.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    us.send_to(b"LIAISONYY_DISCOVER_V1", "127.0.0.1:47821").unwrap();
+    let mut ubuf = [0u8; 1024];
+    let (un, _) = us.recv_from(&mut ubuf).unwrap();
+    let disc: Value = serde_json::from_slice(&ubuf[..un]).unwrap();
+    assert_eq!(disc["app"], "liaisonyy");
+    assert_eq!(disc["port"].as_i64().unwrap(), port as i64);
 
     // stats
     let stats = get(&a, &format!("{base}/api/v1/admin/stats"), Some(&root_token));

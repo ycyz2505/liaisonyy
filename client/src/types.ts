@@ -282,6 +282,12 @@ export interface AdminDecrypted {
   messages: AdminMessageDto[];
 }
 
+export interface DiscoveredServer {
+  url: string;
+  name: string;
+  version: string;
+}
+
 export interface AuditEntry {
   id: number;
   ts: number;
@@ -385,7 +391,14 @@ export type Cmd =
   | { type: "ListBackups" }
   | { type: "RequestRestore"; data: { name: string } }
   | { type: "AdminUserConversations"; data: { uid: number } }
-  | { type: "AdminDecryptConversation"; data: { uid: number; conv_id: number } };
+  | { type: "AdminDecryptConversation"; data: { uid: number; conv_id: number } }
+  | { type: "Discover" }
+  | { type: "CheckUpdate" }
+  | { type: "ApplyUpdate"; data: { url: string; sha256: string } }
+  | {
+      type: "AdminUpdatePackage";
+      data: { data: string; version: string; min_client: string; signature: string };
+    };
 
 export type Ev =
   | { type: "Bootstrap"; data: BootstrapResponse }
@@ -431,6 +444,9 @@ export type Ev =
   | { type: "CsvSaved"; data: { path: string } }
   | { type: "AdminConversations"; data: ConversationInfo[] }
   | { type: "AdminDecrypted"; data: AdminDecrypted }
+  | { type: "Discovered"; data: DiscoveredServer[] }
+  | { type: "UpdateInfo"; data: { version: string; mandatory: boolean; url: string; sha256: string } }
+  | { type: "UpdateNone" }
   | { type: "Toast"; data: string }
   | { type: "Error"; data: string }
   | { type: "Offline"; data: boolean };

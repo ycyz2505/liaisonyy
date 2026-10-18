@@ -13,13 +13,22 @@ pub struct Settings {
     pub class_name: String,
     #[serde(default)]
     pub last_uid: Option<i64>,
+    /// SHA-256 (base64) of the server certificate, keyed by host:port. TOFU.
+    #[serde(default)]
+    pub tls_pins: HashMap<String, String>,
 }
 fn default_server() -> String {
     "https://127.0.0.1:47820".to_string()
 }
 impl Default for Settings {
     fn default() -> Self {
-        Self { server: default_server(), class_id: None, class_name: String::new(), last_uid: None }
+        Self {
+            server: default_server(),
+            class_id: None,
+            class_name: String::new(),
+            last_uid: None,
+            tls_pins: HashMap::new(),
+        }
     }
 }
 

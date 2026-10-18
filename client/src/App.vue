@@ -49,6 +49,12 @@ onBeforeUnmount(() => {
   if (retryTimer) window.clearTimeout(retryTimer);
   if (noticeTimer) window.clearInterval(noticeTimer);
 });
+
+function applyUpdate() {
+  const u = state.updateInfo;
+  if (!u) return;
+  send({ type: "ApplyUpdate", data: { url: u.url, sha256: u.sha256 } });
+}
 </script>
 
 <template>
@@ -78,6 +84,27 @@ onBeforeUnmount(() => {
     <div v-if="state.error" class="error-bar">
       <span>{{ state.error }}</span>
       <button class="link" @click="state.error = ''">×</button>
+    </div>
+
+    <div v-if="state.updateInfo" class="modal-mask" style="z-index: 30">
+      <div class="modal">
+        <h3 style="margin-top: 0">发现新版本 {{ state.updateInfo.version }}</h3>
+        <p class="small">
+          {{
+            state.updateInfo.mandatory
+              ? "当前版本已停止支持，必须更新后才能继续使用。"
+              : "建议更新到最新版本。"
+          }}
+        </p>
+        <button class="primary" @click="applyUpdate">下载并更新</button>
+        <button
+          v-if="!state.updateInfo.mandatory"
+          style="margin-top: 8px"
+          @click="state.updateInfo = null"
+        >
+          稍后
+        </button>
+      </div>
     </div>
   </div>
 </template>

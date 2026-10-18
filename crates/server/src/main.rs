@@ -3046,12 +3046,86 @@ async fn reset(State(state): State<AppState>, Json(req): Json<ResetRequest>) -> 
 }
 
 async fn update_manifest(State(state): State<AppState>) -> Json<Value> {
+    if let Ok(bytes) = std::fs::read(state.data.join("update").join("manifest.json")) {
+        if let Ok(v) = serde_json::from_slice::<Value>(&bytes) {
+            return Json(v);
+        }
+    }
     Json(json!({
         "schema": 1,
         "version": state.version.as_str(),
         "min_client": state.version.as_str(),
         "files": {}
     }))
+}
+
+async fn update_package(State(state): State<AppState>) -> ApiResult<Response> {
+    let bytes = std::fs::read(state.data.join("update").join("package.exe"))
+        .map_err(|_| AppError::not_found("更新包不存在"))?;
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(Body::from(bytes))
+        .map_err(|e| AppError::internal(e.to_string()))
+}
+
+fn update_pubkey() -> Option<[u8; 32]> {
+    let s = std::env::var("LIAISONYY_UPDATE_PUBKEY").ok()?;
+    let raw = b64d(s.trim()).ok()?;
+    if raw.len() != 32 {
+        return None;
+    }
+    let mut k = [0u8; 32];
+    k.copy_from_slice(&raw);
+    Some(k)
+}
+
+async fn admin_upload_update(State(state): State<AppState>, headers: HeaderMap, Json(req): Json<UpdatePackageRequest>) -> ApiResult<Json<Value>> {
+    let a = auth(&state, &headers)?;
+    if a.role != "root" {
+        return Err(AppError::forbidden("需要总管理员权限"));
+    }
+    let ver_ok = |s: &str| {
+        !s.is_empty()
+            && s.len() <= 32
+            && s.chars().all(|c| c.is_ascii_digit() || c == '.')
+    };
+    if !ver_ok(&req.version) || !ver_ok(&req.min_client) {
+        return Err(AppError::bad("版本号格式不正确"));
+    }
+    let bytes = b64d(&req.data).map_err(|_| AppError::bad("更新包数据无效"))?;
+    if bytes.is_empty() || bytes.len() > 100 * 1024 * 1024 {
+        return Err(AppError::bad("更新包大小需在 1B-100MB 之间"));
+    }
+    let sha = sha256_b64(&bytes);
+    let pk = update_pubkey().ok_or_else(|| AppError::bad("服务端未配置 LIAISONYY_UPDATE_PUBKEY"))?;
+    let vk = ed25519_dalek::VerifyingKey::from_bytes(&pk).map_err(|_| AppError::internal("更新公钥无效"))?;
+    let sig_raw = b64d(&req.signature).map_err(|_| AppError::bad("签名格式不正确"))?;
+    let sig = ed25519_dalek::Signature::from_slice(&sig_raw).map_err(|_| AppError::bad("签名格式不正确"))?;
+    let msg = format!("liaisonyy-update-v1|{}|{}|{}", req.version, req.min_client, sha);
+    vk.verify_strict(msg.as_bytes(), &sig)
+        .map_err(|_| AppError::bad("更新包签名校验失败"))?;
+    let dir = state.data.join("update");
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join("package.exe"), &bytes)?;
+    let manifest = json!({
+        "schema": 1,
+        "version": req.version,
+        "min_client": req.min_client,
+        "signature": req.signature,
+        "files": {
+            "windows": {
+                "url": "/api/v1/update/package",
+                "sha256": sha,
+                "size": bytes.len()
+            }
+        }
+    });
+    std::fs::write(dir.join("manifest.json"), serde_json::to_vec_pretty(&manifest)?)?;
+    let conn = state.db.lock().unwrap();
+    audit(&conn, &state.hmac, Some(a.uid), "admin.update.upload", Some("version"), Some(&req.version), Some(&sha))?;
+    Ok(Json(manifest))
 }
 
 async fn admin_page() -> Html<&'static str> {
@@ -3386,6 +3460,35 @@ fn sync_network_time() -> Option<i64> {
     None
 }
 
+fn spawn_discovery(api_port: u16) {
+    std::thread::spawn(move || {
+        let sock = match UdpSocket::bind(("0.0.0.0", 47821)) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("WARN: discovery disabled (UDP 47821): {e}");
+                return;
+            }
+        };
+        let _ = sock.set_read_timeout(Some(Duration::from_secs(1)));
+        let resp = json!({
+            "app": "liaisonyy",
+            "protocol": PROTOCOL_VERSION,
+            "version": APP_VERSION,
+            "port": api_port,
+            "name": "杨村一中 liaisonyy"
+        })
+        .to_string();
+        let mut buf = [0u8; 512];
+        loop {
+            if let Ok((n, addr)) = sock.recv_from(&mut buf) {
+                if buf[..n].starts_with(b"LIAISONYY_DISCOVER_V1") {
+                    let _ = sock.send_to(resp.as_bytes(), addr);
+                }
+            }
+        }
+    });
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -3413,6 +3516,7 @@ async fn main() -> anyhow::Result<()> {
     }
     std::fs::create_dir_all(&data)?;
     apply_pending_restore(&data)?;
+    spawn_discovery(port);
     let conn = Connection::open(data.join("liaisonyy.db"))?;
     init_db(&conn)?;
     if sync_network_time().is_none() {
@@ -3497,6 +3601,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/admin/students/:uid/keys", get(admin_student_keys))
         .route("/api/v1/admin/reset-keys", post(create_reset_key))
         .route("/api/v1/update/manifest", get(update_manifest))
+        .route("/api/v1/update/package", get(update_package))
+        .route("/api/v1/admin/update/package", post(admin_upload_update))
         .route("/admin", get(admin_page))
         .route("/admin/", get(admin_page))
         .with_state(state);

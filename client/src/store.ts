@@ -13,6 +13,7 @@ import type {
   BootstrapResponse,
   ClassInfo,
   ConversationInfo,
+  DiscoveredServer,
   Ev,
   FriendDto,
   FriendRequestView,
@@ -130,6 +131,9 @@ export const state = reactive({
   adminConvs: [] as ConversationInfo[],
   adminDecrypted: null as AdminDecrypted | null,
   decryptUid: "",
+  discovered: [] as DiscoveredServer[],
+  discovering: false,
+  updateInfo: null as { version: string; mandatory: boolean; url: string; sha256: string } | null,
   toast: "",
   error: "",
 });
@@ -239,6 +243,7 @@ export function handleEv(ev: Ev): void {
       state.bootstrap = ev.data;
       if (ev.data.setup_required && state.page === "Welcome") state.page = "Setup";
       if (!ev.data.setup_required && state.page === "Setup") state.page = "Welcome";
+      send({ type: "CheckUpdate" });
       break;
     }
     case "Roster":
@@ -489,6 +494,28 @@ export function handleEv(ev: Ev): void {
       break;
     case "AdminDecrypted":
       state.adminDecrypted = ev.data;
+      break;
+    case "Discovered": {
+      state.discovering = false;
+      state.discovered = ev.data;
+      if (ev.data.length === 1) {
+        const s = ev.data[0];
+        state.serverInput = s.url;
+        send({ type: "SetServer", data: s.url });
+        send({ type: "Bootstrap" });
+        showToast(`已发现服务端：${s.name}`);
+      } else if (ev.data.length > 1) {
+        showToast("发现多个服务端，请先联系管理员确认，不要随意连接");
+      } else {
+        showToast("没有发现服务端，请手动输入地址");
+      }
+      break;
+    }
+    case "UpdateInfo":
+      state.updateInfo = ev.data;
+      break;
+    case "UpdateNone":
+      state.updateInfo = null;
       break;
     case "Toast":
       showToast(ev.data);

@@ -640,6 +640,21 @@ pub struct AdminDecrypted {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct DiscoveredServer {
+    pub url: String,
+    pub name: String,
+    pub version: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct UpdatePackageRequest {
+    pub data: String,
+    pub version: String,
+    pub min_client: String,
+    pub signature: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AuditEntry {
     pub id: i64,
     pub ts: i64,

@@ -5,8 +5,13 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::Read;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls::{DigitallySignedStruct, SignatureScheme};
 
 #[derive(Clone, Debug, Serialize)]
 pub struct MessageView {
@@ -117,6 +122,10 @@ pub enum Cmd {
     RequestRestore { name: String },
     AdminUserConversations { uid: i64 },
     AdminDecryptConversation { uid: i64, conv_id: i64 },
+    Discover,
+    CheckUpdate,
+    ApplyUpdate { url: String, sha256: String },
+    AdminUpdatePackage { data: String, version: String, min_client: String, signature: String },
 }
 
 #[derive(Serialize, Clone)]
@@ -165,6 +174,9 @@ pub enum Ev {
     CsvSaved { path: String },
     AdminConversations(Vec<ConversationInfo>),
     AdminDecrypted(AdminDecrypted),
+    Discovered(Vec<DiscoveredServer>),
+    UpdateInfo { version: String, mandatory: bool, url: String, sha256: String },
+    UpdateNone,
     Toast(String),
     Error(String),
     Offline(bool),
@@ -203,6 +215,7 @@ impl Drop for Session {
 
 struct Worker {
     agent: ureq::Agent,
+    pin_seen: Arc<Mutex<Option<String>>>,
     base: String,
     settings: Settings,
     cache: Cache,
@@ -217,16 +230,12 @@ pub fn spawn(settings: Settings, cache: Cache) -> (Sender<Cmd>, Receiver<Ev>) {
     let (cmd_tx, cmd_rx) = mpsc::channel::<Cmd>();
     let (ev_tx, ev_rx) = mpsc::channel::<Ev>();
     thread::spawn(move || {
-        let tls = ureq::native_tls::TlsConnector::builder()
-            .danger_accept_invalid_certs(true)
-            .build()
-            .expect("tls");
-        let agent = ureq::AgentBuilder::new()
-            .tls_connector(std::sync::Arc::new(tls))
-            .build();
         let base = settings.server.clone();
+        let pin = settings.tls_pins.get(&host_key(&base)).cloned();
+        let (agent, pin_seen) = make_agent(pin);
         let mut w = Worker {
             agent,
+            pin_seen,
             base,
             settings,
             cache,
@@ -249,6 +258,109 @@ pub fn spawn(settings: Settings, cache: Cache) -> (Sender<Cmd>, Receiver<Ev>) {
         }
     });
     (cmd_tx, ev_rx)
+}
+
+#[derive(Debug)]
+struct TofuVerifier {
+    pin: Option<String>,
+    seen: Arc<Mutex<Option<String>>>,
+}
+
+impl ServerCertVerifier for TofuVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        let fp = sha256_b64(end_entity.as_ref());
+        if let Some(p) = &self.pin {
+            if p != &fp {
+                return Err(rustls::Error::General(
+                    "服务器证书指纹已变化，可能存在中间人攻击".into(),
+                ));
+            }
+        }
+        if let Ok(mut g) = self.seen.lock() {
+            *g = Some(fp);
+        }
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
+fn host_key(base: &str) -> String {
+    base.split("://")
+        .nth(1)
+        .unwrap_or(base)
+        .trim_end_matches('/')
+        .to_string()
+}
+
+fn make_agent(pin: Option<String>) -> (ureq::Agent, Arc<Mutex<Option<String>>>) {
+    let seen = Arc::new(Mutex::new(None));
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .expect("tls protocol versions")
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(TofuVerifier {
+            pin,
+            seen: seen.clone(),
+        }))
+        .with_no_client_auth();
+    let agent = ureq::AgentBuilder::new()
+        .tls_config(Arc::new(config))
+        .build();
+    (agent, seen)
+}
+
+fn version_gt(a: &str, b: &str) -> bool {
+    let pa: Vec<u64> = a.split('.').map(|x| x.parse().unwrap_or(0)).collect();
+    let pb: Vec<u64> = b.split('.').map(|x| x.parse().unwrap_or(0)).collect();
+    for i in 0..pa.len().max(pb.len()) {
+        let x = *pa.get(i).unwrap_or(&0);
+        let y = *pb.get(i).unwrap_or(&0);
+        if x != y {
+            return x > y;
+        }
+    }
+    false
 }
 
 fn urlencode(s: &str) -> String {
@@ -315,6 +427,10 @@ impl Worker {
             Cmd::SetServer(url) => {
                 self.base = url.clone();
                 self.settings.server = url;
+                let pin = self.settings.tls_pins.get(&host_key(&self.base)).cloned();
+                let (agent, seen) = make_agent(pin);
+                self.agent = agent;
+                self.pin_seen = seen;
                 store::save_settings(&self.settings);
                 self.toast("服务器地址已保存");
             }
@@ -795,7 +911,192 @@ impl Worker {
                     self.err(e);
                 }
             }
+            Cmd::Discover => match self.discover() {
+                Ok(v) => self.send(Ev::Discovered(v)),
+                Err(e) => self.err(e),
+            },
+            Cmd::CheckUpdate => match self.check_update() {
+                Ok(Some((version, mandatory, url, sha256))) => self.send(Ev::UpdateInfo {
+                    version,
+                    mandatory,
+                    url,
+                    sha256,
+                }),
+                Ok(None) => self.send(Ev::UpdateNone),
+                Err(e) => self.err(e),
+            },
+            Cmd::ApplyUpdate { url, sha256 } => {
+                if let Err(e) = self.apply_update(&url, &sha256) {
+                    self.err(e);
+                }
+            }
+            Cmd::AdminUpdatePackage { data, version, min_client, signature } => {
+                let r = self.token().and_then(|t| {
+                    self.call(
+                        "POST",
+                        "/api/v1/admin/update/package",
+                        Some(&t),
+                        Some(json!({
+                            "data": data,
+                            "version": version,
+                            "min_client": min_client,
+                            "signature": signature
+                        })),
+                    )
+                });
+                match r {
+                    Ok(_) => self.toast("更新包已上传并发布"),
+                    Err(e) => self.err(e),
+                }
+            }
         }
+        self.persist_pin();
+    }
+
+    fn check_update(&self) -> Result<Option<(String, bool, String, String)>, String> {
+        let v = self.call("GET", "/api/v1/update/manifest", None, None)?;
+        let version = v.get("version").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let min_client = v.get("min_client").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let file = &v["files"]["windows"];
+        let url = file.get("url").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let sha = file.get("sha256").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        if version.is_empty() || url.is_empty() || sha.is_empty() {
+            return Ok(None);
+        }
+        let Some(pk_b64) = option_env!("LIAISONYY_UPDATE_PUBKEY") else {
+            return Ok(None);
+        };
+        let pk_raw = b64d(pk_b64).map_err(|_| "更新公钥格式不正确".to_string())?;
+        if pk_raw.len() != 32 {
+            return Err("更新公钥格式不正确".into());
+        }
+        let mut pk = [0u8; 32];
+        pk.copy_from_slice(&pk_raw);
+        let vk = ed25519_dalek::VerifyingKey::from_bytes(&pk)
+            .map_err(|_| "更新公钥无效".to_string())?;
+        let sig_raw = b64d(v.get("signature").and_then(|x| x.as_str()).unwrap_or(""))
+            .map_err(|_| "更新签名格式不正确".to_string())?;
+        let sig = ed25519_dalek::Signature::from_slice(&sig_raw)
+            .map_err(|_| "更新签名格式不正确".to_string())?;
+        let msg = format!("liaisonyy-update-v1|{version}|{min_client}|{sha}");
+        vk.verify_strict(msg.as_bytes(), &sig)
+            .map_err(|_| "更新签名校验失败".to_string())?;
+        if !version_gt(&version, APP_VERSION) {
+            return Ok(None);
+        }
+        let mandatory = version_gt(&min_client, APP_VERSION);
+        Ok(Some((version, mandatory, url, sha)))
+    }
+
+    fn apply_update(&self, url: &str, sha: &str) -> Result<(), String> {
+        let full = if url.starts_with("http://") || url.starts_with("https://") {
+            url.to_string()
+        } else {
+            format!("{}{}", self.base.trim_end_matches('/'), url)
+        };
+        let resp = self
+            .agent
+            .get(&full)
+            .call()
+            .map_err(|e| format!("下载更新失败: {e}"))?;
+        let mut buf = Vec::new();
+        resp.into_reader()
+            .read_to_end(&mut buf)
+            .map_err(|e| e.to_string())?;
+        if buf.len() > 100 * 1024 * 1024 {
+            return Err("更新包过大".into());
+        }
+        if sha256_b64(&buf) != sha {
+            return Err("更新包校验失败".into());
+        }
+        #[cfg(windows)]
+        {
+            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+            let dir = exe.parent().ok_or_else(|| "无法定位程序目录".to_string())?;
+            std::fs::write(dir.join("liaisonyy-new.exe"), &buf).map_err(|e| e.to_string())?;
+            let script = "@echo off\r\n\
+                timeout /t 2 /nobreak >nul\r\n\
+                move /y \"%~dp0liaisonyy-new.exe\" \"%~dp0liaisonyy.exe\"\r\n\
+                start \"\" \"%~dp0liaisonyy.exe\"\r\n\
+                del \"%~f0\"\r\n";
+            std::fs::write(dir.join("liaisonyy-update.bat"), script).map_err(|e| e.to_string())?;
+            std::process::Command::new("cmd")
+                .args(["/C", "start", "", "liaisonyy-update.bat"])
+                .current_dir(dir)
+                .spawn()
+                .map_err(|e| e.to_string())?;
+            std::process::exit(0);
+        }
+        #[cfg(not(windows))]
+        {
+            Err("仅支持 Windows 自动更新".into())
+        }
+    }
+
+    fn discover(&self) -> Result<Vec<DiscoveredServer>, String> {
+        use std::net::UdpSocket;
+        let sock = UdpSocket::bind("0.0.0.0:0").map_err(|e| e.to_string())?;
+        let _ = sock.set_broadcast(true);
+        sock.set_read_timeout(Some(Duration::from_millis(300)))
+            .map_err(|e| e.to_string())?;
+        let probe = b"LIAISONYY_DISCOVER_V1";
+        let _ = sock.send_to(probe, "255.255.255.255:47821");
+        let _ = sock.send_to(probe, "127.0.0.1:47821");
+        let deadline = Instant::now() + Duration::from_millis(1600);
+        let mut found: HashMap<String, DiscoveredServer> = HashMap::new();
+        while Instant::now() < deadline {
+            let mut buf = [0u8; 1024];
+            match sock.recv_from(&mut buf) {
+                Ok((n, addr)) => {
+                    if let Ok(v) = serde_json::from_slice::<Value>(&buf[..n]) {
+                        if v.get("app").and_then(|x| x.as_str()) != Some("liaisonyy") {
+                            continue;
+                        }
+                        let port = v.get("port").and_then(|x| x.as_i64()).unwrap_or(47820);
+                        let url = format!("https://{}:{}", addr.ip(), port);
+                        found.insert(
+                            url.clone(),
+                            DiscoveredServer {
+                                url,
+                                name: v
+                                    .get("name")
+                                    .and_then(|x| x.as_str())
+                                    .unwrap_or("liaisonyy")
+                                    .to_string(),
+                                version: v
+                                    .get("version")
+                                    .and_then(|x| x.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
+                            },
+                        );
+                    }
+                }
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::WouldBlock
+                        || e.kind() == std::io::ErrorKind::TimedOut => {}
+                Err(_) => break,
+            }
+        }
+        let mut v: Vec<_> = found.into_values().collect();
+        v.sort_by(|a, b| a.url.cmp(&b.url));
+        Ok(v)
+    }
+
+    fn persist_pin(&mut self) {
+        let seen = self.pin_seen.lock().ok().and_then(|g| g.clone());
+        let Some(fp) = seen else {
+            return;
+        };
+        let key = host_key(&self.base);
+        if self.settings.tls_pins.get(&key) == Some(&fp) {
+            return;
+        }
+        self.settings.tls_pins.insert(key, fp.clone());
+        store::save_settings(&self.settings);
+        let (agent, seen) = make_agent(Some(fp));
+        self.agent = agent;
+        self.pin_seen = seen;
     }
 
     fn fetch_raw(&self, path: &str) -> Result<Vec<u8>, String> {
@@ -1676,6 +1977,7 @@ impl Worker {
         }
         self.replay_outbox();
         self.save_cache();
+        self.persist_pin();
     }
 
     fn rekey_class(&mut self, m: &MeResponse) {
