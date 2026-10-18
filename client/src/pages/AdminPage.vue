@@ -9,6 +9,7 @@ const isRoot = computed(() => state.user?.role === "root");
 function refresh() {
   send({ type: "AdminStats" });
   send({ type: "AdminReports" });
+  send({ type: "AdminTransfers" });
   if (isRoot.value) {
     send({ type: "AdminAudit" });
     send({ type: "AdminClasses" });
@@ -16,6 +17,26 @@ function refresh() {
 }
 
 onMounted(refresh);
+
+function transferAct(id: number, action: string) {
+  send({ type: "TransferAction", data: { id, action } });
+}
+
+function isPending(s: string): boolean {
+  return s === "pending" || s === "out_approved" || s === "in_approved";
+}
+
+function statusText(s: string): string {
+  return (
+    {
+      pending: "待审批",
+      out_approved: "转出班已同意",
+      in_approved: "转入班已同意",
+      approved: "已通过",
+      rejected: "已拒绝",
+    }[s] ?? s
+  );
+}
 
 function resolveReport(r: ReportDto, action: string) {
   const minutes = action === "mute" ? 60 : null;
@@ -135,6 +156,27 @@ function back() {
     <button style="margin-top: 10px" @click="state.page = 'Announcements'; send({ type: 'Announcements' })">
       公告管理
     </button>
+
+    <div class="sep"></div>
+    <div class="row" style="align-items: baseline">
+      <h3 style="flex: 1; margin: 0">转班审批</h3>
+      <button class="link fixed" @click="send({ type: 'AdminTransfers' })">刷新</button>
+    </div>
+    <div v-if="state.adminTransfers.length === 0" class="empty">没有转班申请</div>
+    <div v-for="t in state.adminTransfers" :key="t.id" class="card">
+      <div class="row" style="align-items: baseline">
+        <b class="grow">{{ t.display_name }}</b>
+        <span class="badge" :class="isPending(t.status) ? 'badge-warn' : 'badge-ok'">
+          {{ statusText(t.status) }}
+        </span>
+      </div>
+      <div class="small">{{ t.from_class_name }} → {{ t.to_class_name }}</div>
+      <div v-if="t.reason" class="small muted" style="margin-top: 3px">{{ t.reason }}</div>
+      <div v-if="isPending(t.status)" class="row" style="margin-top: 6px">
+        <button class="fixed primary" @click="transferAct(t.id, 'approve')">同意</button>
+        <button class="fixed" @click="transferAct(t.id, 'reject')">拒绝</button>
+      </div>
+    </div>
 
     <template v-if="isRoot">
       <div class="sep"></div>

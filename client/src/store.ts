@@ -19,6 +19,7 @@ import type {
   PublicProfile,
   ReportDto,
   RosterEntry,
+  TransferDto,
 } from "./types";
 
 export type Page =
@@ -114,6 +115,10 @@ export const state = reactive({
   annBody: "",
   annScope: "class" as "global" | "class",
   annClassId: null as number | null,
+  myTransfers: [] as TransferDto[],
+  adminTransfers: [] as TransferDto[],
+  transferToClassId: null as number | null,
+  transferReason: "",
   toast: "",
   error: "",
 });
@@ -197,6 +202,10 @@ export function clearSensitiveForms(): void {
   state.notifications = [];
   state.announcements = [];
   state.adminReports = [];
+  state.myTransfers = [];
+  state.adminTransfers = [];
+  state.transferToClassId = null;
+  state.transferReason = "";
 }
 
 export function newId(): string {
@@ -254,6 +263,7 @@ export function handleEv(ev: Ev): void {
       send({ type: "ListBlocks" });
       send({ type: "Notifications" });
       send({ type: "Announcements" });
+      send({ type: "MyTransfers" });
       if (ev.data.offline) showToast("已进入离线模式，消息会先存在本机");
       break;
     }
@@ -414,6 +424,30 @@ export function handleEv(ev: Ev): void {
       state.annTitle = "";
       state.annBody = "";
       break;
+    case "Transfers":
+      state.myTransfers = ev.data;
+      break;
+    case "AdminTransfers":
+      state.adminTransfers = ev.data;
+      break;
+    case "MeUpdated": {
+      if (!state.user) break;
+      const oldClass = state.user.class_id;
+      state.user.class_id = ev.data.class_id;
+      state.user.display_name = ev.data.display_name;
+      state.user.login_policy = ev.data.login_policy;
+      state.user.avatar_file_id = ev.data.avatar_file_id;
+      if (ev.data.class_id !== oldClass) {
+        state.classId = ev.data.class_id;
+        const cls = state.bootstrap?.classes.find((c) => c.id === ev.data.class_id);
+        state.className = cls?.name ?? "";
+        if (ev.data.class_id != null) {
+          send({ type: "Accounts", data: { class_id: ev.data.class_id } });
+        }
+        showToast("你的班级信息已更新");
+      }
+      break;
+    }
     case "Toast":
       showToast(ev.data);
       break;

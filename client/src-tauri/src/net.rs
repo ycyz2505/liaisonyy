@@ -104,6 +104,10 @@ pub enum Cmd {
     AdminReports,
     ResolveReport { id: i64, action: String, minutes: Option<i64> },
     AdminUserAction { uid: i64, action: String, minutes: Option<i64> },
+    CreateTransfer { to_class_id: i64, reason: String },
+    MyTransfers,
+    AdminTransfers,
+    TransferAction { id: i64, action: String },
 }
 
 #[derive(Serialize, Clone)]
@@ -142,6 +146,9 @@ pub enum Ev {
     Reports(Vec<ReportDto>),
     ReportCreated,
     AnnouncementCreated { id: i64 },
+    Transfers(Vec<TransferDto>),
+    AdminTransfers(Vec<TransferDto>),
+    MeUpdated(MeResponse),
     Toast(String),
     Error(String),
     Offline(bool),
@@ -187,6 +194,7 @@ struct Worker {
     ev: Sender<Ev>,
     last_poll: Instant,
     offline: bool,
+    poll_count: u32,
 }
 
 pub fn spawn(settings: Settings, cache: Cache) -> (Sender<Cmd>, Receiver<Ev>) {
@@ -210,6 +218,7 @@ pub fn spawn(settings: Settings, cache: Cache) -> (Sender<Cmd>, Receiver<Ev>) {
             ev: ev_tx,
             last_poll: Instant::now() - Duration::from_secs(30),
             offline: false,
+            poll_count: 0,
         };
         loop {
             match cmd_rx.recv_timeout(Duration::from_millis(250)) {
@@ -649,6 +658,52 @@ impl Worker {
                         self.toast("操作已完成");
                         if let Ok(v) = self.do_get::<Vec<ReportDto>>("/api/v1/admin/reports") {
                             self.send(Ev::Reports(v));
+                        }
+                    }
+                    Err(e) => self.err(e),
+                }
+            }
+            Cmd::CreateTransfer { to_class_id, reason } => {
+                let r = self.token().and_then(|t| {
+                    self.call(
+                        "POST",
+                        "/api/v1/transfers",
+                        Some(&t),
+                        Some(json!({"to_class_id": to_class_id, "reason": reason})),
+                    )
+                });
+                match r {
+                    Ok(_) => {
+                        self.toast("转班申请已提交，等待双方班级管理员审批");
+                        if let Ok(v) = self.do_get::<Vec<TransferDto>>("/api/v1/transfers") {
+                            self.send(Ev::Transfers(v));
+                        }
+                    }
+                    Err(e) => self.err(e),
+                }
+            }
+            Cmd::MyTransfers => match self.do_get::<Vec<TransferDto>>("/api/v1/transfers") {
+                Ok(v) => self.send(Ev::Transfers(v)),
+                Err(e) => self.err(e),
+            },
+            Cmd::AdminTransfers => match self.do_get::<Vec<TransferDto>>("/api/v1/admin/transfers") {
+                Ok(v) => self.send(Ev::AdminTransfers(v)),
+                Err(e) => self.err(e),
+            },
+            Cmd::TransferAction { id, action } => {
+                let r = self.token().and_then(|t| {
+                    self.call(
+                        "POST",
+                        &format!("/api/v1/admin/transfers/{id}/action"),
+                        Some(&t),
+                        Some(json!({"action": action})),
+                    )
+                });
+                match r {
+                    Ok(_) => {
+                        self.toast("已处理");
+                        if let Ok(v) = self.do_get::<Vec<TransferDto>>("/api/v1/admin/transfers") {
+                            self.send(Ev::AdminTransfers(v));
                         }
                     }
                     Err(e) => self.err(e),
@@ -1428,6 +1483,12 @@ impl Worker {
             let _ = self.fetch_messages(c.id, last, false);
         }
         self.send(Ev::Conversations(convs));
+        self.poll_count = self.poll_count.wrapping_add(1);
+        if self.poll_count % 10 == 0 {
+            if let Ok(m) = self.do_get::<MeResponse>("/api/v1/me") {
+                self.send(Ev::MeUpdated(m));
+            }
+        }
         self.replay_outbox();
         self.save_cache();
     }

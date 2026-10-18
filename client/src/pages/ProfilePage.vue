@@ -7,6 +7,33 @@ import Avatar from "../components/Avatar.vue";
 
 const p = computed(() => state.myProfile);
 const bg = computed(() => fileUrl(p.value?.background_file_id));
+const isStudent = computed(() => state.user?.role === "student");
+const targetClasses = computed(() =>
+  (state.bootstrap?.classes ?? []).filter((c) => c.id !== state.user?.class_id),
+);
+
+function statusText(s: string): string {
+  return (
+    {
+      pending: "待审批",
+      out_approved: "转出班已同意",
+      in_approved: "转入班已同意",
+      approved: "已通过",
+      rejected: "已拒绝",
+    }[s] ?? s
+  );
+}
+
+function submitTransfer() {
+  if (state.transferToClassId == null) {
+    showError("请选择目标班级");
+    return;
+  }
+  send({
+    type: "CreateTransfer",
+    data: { to_class_id: state.transferToClassId, reason: state.transferReason },
+  });
+}
 
 const roleText = computed(() => {
   const r = state.user?.role;
@@ -146,6 +173,27 @@ function unblock(uid: number) {
       </div>
       <button class="fixed" @click="unblock(b.uid)">解除</button>
     </div>
+
+    <template v-if="isStudent">
+      <div class="sep"></div>
+      <h3>转班申请</h3>
+      <div v-if="state.myTransfers.length > 0" class="card">
+        <div v-for="t in state.myTransfers" :key="t.id" class="small" style="padding: 3px 0">
+          {{ t.from_class_name }} → {{ t.to_class_name }} · {{ statusText(t.status) }}
+        </div>
+      </div>
+      <label>目标班级</label>
+      <select v-model.number="state.transferToClassId">
+        <option :value="null">选择班级</option>
+        <option v-for="c in targetClasses" :key="c.id" :value="c.id">
+          {{ c.name }} {{ c.grade }}
+        </option>
+      </select>
+      <label>理由（可选）</label>
+      <input v-model="state.transferReason" maxlength="500" placeholder="为什么想转班" />
+      <button @click="submitTransfer">提交转班申请</button>
+      <div class="hint">需要转出班级和转入班级的管理员都同意；总管理员可一次批准。</div>
+    </template>
 
     <button style="margin-top: 12px" @click="back">返回</button>
   </div>

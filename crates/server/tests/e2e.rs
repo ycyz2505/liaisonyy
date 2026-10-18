@@ -554,7 +554,156 @@ fn e2e_core_flow() {
         None,
         json!({"uid_or_handle":"zhangsan","kind":"password","input":"NewPass123a"}),
     );
-    assert!(relogin["token"].as_str().is_some());
+    let ra2_token = relogin["token"].as_str().unwrap().to_string();
+
+    // second class, student and class admins for both sides
+    let (sk_c2, pk_c2) = gen_keypair();
+    let escrow2 = seal(&pk_r, &b64d(&sk_c2).unwrap()).unwrap();
+    let cls2 = post(
+        &a,
+        &format!("{base}/api/v1/admin/classes"),
+        Some(&root_token),
+        json!({"name":"测试二班","grade":"高一","escrow_public_key":pk_c2,"escrow_priv_for_root":escrow2}),
+    );
+    let class2_id = cls2["id"].as_i64().unwrap();
+    post(
+        &a,
+        &format!("{base}/api/v1/admin/classes/{class2_id}/roster"),
+        Some(&root_token),
+        json!({"names":["王五"]}),
+    );
+    let roster2 = get(&a, &format!("{base}/api/v1/classes/{class2_id}/roster"), None);
+    let wang_id = roster2
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["real_name"] == "王五")
+        .unwrap()["id"]
+        .as_i64()
+        .unwrap();
+    let rc = register(&a, &base, class2_id, wang_id, "王五", "wangwu", "Pass1234c", &pk_c2, &pk_r);
+    post(
+        &a,
+        &format!("{base}/api/v1/admin/classes/{class_id}/admin"),
+        Some(&root_token),
+        json!({"uid": rb.uid, "class_priv_for_admin": seal(&rb.pk, &b64d(&sk_c).unwrap()).unwrap()}),
+    );
+    post(
+        &a,
+        &format!("{base}/api/v1/admin/classes/{class2_id}/admin"),
+        Some(&root_token),
+        json!({"uid": rc.uid, "class_priv_for_admin": seal(&rc.pk, &b64d(&sk_c2).unwrap()).unwrap()}),
+    );
+
+    // transfer requires out-class then in-class approval
+    let tr = post(
+        &a,
+        &format!("{base}/api/v1/transfers"),
+        Some(&ra2_token),
+        json!({"to_class_id": class2_id, "reason": "测试转班"}),
+    );
+    let transfer_id = tr["id"].as_i64().unwrap();
+    let rb_transfers = get(&a, &format!("{base}/api/v1/admin/transfers"), Some(&rb.token));
+    assert!(rb_transfers
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|t| t["id"].as_i64() == Some(transfer_id)));
+    let step1 = post(
+        &a,
+        &format!("{base}/api/v1/admin/transfers/{transfer_id}/action"),
+        Some(&rb.token),
+        json!({"action": "approve"}),
+    );
+    assert_eq!(step1["status"], "out_approved");
+    let step2 = post(
+        &a,
+        &format!("{base}/api/v1/admin/transfers/{transfer_id}/action"),
+        Some(&rc.token),
+        json!({"action": "approve"}),
+    );
+    assert_eq!(step2["status"], "approved");
+
+    let me2 = get(&a, &format!("{base}/api/v1/me"), Some(&ra2_token));
+    assert_eq!(me2["class_id"].as_i64().unwrap(), class2_id);
+    let roster_after = get(&a, &format!("{base}/api/v1/classes/{class_id}/roster"), None);
+    let zhang_after = roster_after
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["real_name"] == "张三")
+        .unwrap();
+    assert_eq!(zhang_after["claimed"], false);
+    let (code, _) = call_status(
+        &a,
+        "GET",
+        &format!("{base}/api/v1/conversations/{cg_id}/keys"),
+        Some(&ra2_token),
+        None,
+    );
+    assert_eq!(code, 403, "left class group should be inaccessible");
+
+    // the new class group uses a rotated key that includes the transferred student
+    let convs2 = get(&a, &format!("{base}/api/v1/conversations"), Some(&ra2_token));
+    let cg2 = convs2
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["kind"] == "class_group" && c["class_id"].as_i64() == Some(class2_id))
+        .unwrap();
+    let cg2_id = cg2["id"].as_i64().unwrap();
+    let ver2 = cg2["key_version"].as_i64().unwrap();
+    let rc_convs = get(&a, &format!("{base}/api/v1/conversations"), Some(&rc.token));
+    assert!(rc_convs
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|c| c["id"].as_i64() == Some(cg2_id)));
+    let rc_keys = get(&a, &format!("{base}/api/v1/conversations/{cg2_id}/keys"), Some(&rc.token));
+    let wrapped_rc = rc_keys
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|k| k["key_version"].as_i64() == Some(ver2))
+        .unwrap()["wrapped_key"]
+        .as_str()
+        .unwrap();
+    let gk_rc = open_sealed(&b64e(&rc.sk), wrapped_rc).unwrap();
+    let mut gk_rc_arr = [0u8; 32];
+    gk_rc_arr.copy_from_slice(&gk_rc);
+    let cg2_ct = b64e(&aead_encrypt(&gk_rc_arr, b"welcome transfer", cg2_id.to_string().as_bytes()));
+    post(
+        &a,
+        &format!("{base}/api/v1/conversations/{cg2_id}/messages"),
+        Some(&rc.token),
+        json!({"key_version": ver2, "ciphertext": cg2_ct, "client_msg_id": uuid()}),
+    );
+    let ra2_keys = get(&a, &format!("{base}/api/v1/conversations/{cg2_id}/keys"), Some(&ra2_token));
+    let wrapped_ra2 = ra2_keys
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|k| k["key_version"].as_i64() == Some(ver2))
+        .unwrap()["wrapped_key"]
+        .as_str()
+        .unwrap();
+    let gk_ra2 = open_sealed(&b64e(&ra.sk), wrapped_ra2).unwrap();
+    let mut gk_ra2_arr = [0u8; 32];
+    gk_ra2_arr.copy_from_slice(&gk_ra2);
+    let cg2_msgs = get(&a, &format!("{base}/api/v1/conversations/{cg2_id}/messages?after=0"), Some(&ra2_token));
+    let cg2_msg = cg2_msgs
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["sender_uid"].as_i64() == Some(rc.uid))
+        .unwrap();
+    let cg2_pt = aead_decrypt(
+        &gk_ra2_arr,
+        &b64d(cg2_msg["ciphertext"].as_str().unwrap()).unwrap(),
+        cg2_id.to_string().as_bytes(),
+    )
+    .unwrap();
+    assert_eq!(String::from_utf8(cg2_pt).unwrap(), "welcome transfer");
 
     // stats
     let stats = get(&a, &format!("{base}/api/v1/admin/stats"), Some(&root_token));

@@ -1702,6 +1702,238 @@ async fn admin_user_action(State(state): State<AppState>, headers: HeaderMap, Pa
     Ok(Json(json!({"ok":true})))
 }
 
+fn load_transfer(conn: &Connection, id: i64) -> ApiResult<Option<TransferDto>> {
+    Ok(conn
+        .query_row(
+            "SELECT t.id,t.uid,u.display_name,t.from_class_id,fc.name,t.to_class_id,tc.name,t.reason,t.status,t.out_by,t.in_by,t.created_at
+             FROM transfers t JOIN users u ON u.uid=t.uid
+             JOIN classes fc ON fc.id=t.from_class_id JOIN classes tc ON tc.id=t.to_class_id
+             WHERE t.id=?1",
+            params![id],
+            |r| {
+                Ok(TransferDto {
+                    id: r.get(0)?,
+                    uid: r.get(1)?,
+                    display_name: r.get(2)?,
+                    from_class_id: r.get(3)?,
+                    from_class_name: r.get(4)?,
+                    to_class_id: r.get(5)?,
+                    to_class_name: r.get(6)?,
+                    reason: r.get(7)?,
+                    status: r.get(8)?,
+                    out_by: r.get(9)?,
+                    in_by: r.get(10)?,
+                    created_at: r.get(11)?,
+                })
+            },
+        )
+        .optional()?)
+}
+
+async fn create_transfer(State(state): State<AppState>, headers: HeaderMap, Json(req): Json<CreateTransferRequest>) -> ApiResult<Json<Value>> {
+    let a = auth(&state, &headers)?;
+    let reason = req.reason.trim();
+    if reason.chars().count() > 500 {
+        return Err(AppError::bad("转班理由最多 500 字"));
+    }
+    let conn = state.db.lock().unwrap();
+    let (role, class_id): (String, Option<i64>) = conn.query_row(
+        "SELECT role,class_id FROM users WHERE uid=?1",
+        params![a.uid],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    if role != "student" {
+        return Err(AppError::forbidden("只有学生可以申请转班"));
+    }
+    let from = class_id.ok_or_else(|| AppError::bad("你还没有班级"))?;
+    if req.to_class_id == from {
+        return Err(AppError::bad("已经在这个班了"));
+    }
+    let exists: Option<i64> = conn
+        .query_row("SELECT id FROM classes WHERE id=?1 AND archived=0", params![req.to_class_id], |r| r.get(0))
+        .optional()?;
+    if exists.is_none() {
+        return Err(AppError::not_found("目标班级不存在"));
+    }
+    let pending: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM transfers WHERE uid=?1 AND status IN ('pending','out_approved','in_approved')",
+        params![a.uid],
+        |r| r.get(0),
+    )?;
+    if pending > 0 {
+        return Err(AppError::conflict("已有待处理的转班申请"));
+    }
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "INSERT INTO transfers (uid,from_class_id,to_class_id,reason,status,created_at) VALUES (?1,?2,?3,?4,'pending',?5)",
+        params![a.uid, from, req.to_class_id, reason, now()],
+    )?;
+    let id = tx.last_insert_rowid();
+    let admins: Vec<i64> = {
+        let mut stmt = tx.prepare(
+            "SELECT uid FROM users WHERE status='active' AND (role='root' OR (role='class_admin' AND class_id IN (?1,?2)))",
+        )?;
+        let v = stmt
+            .query_map(params![from, req.to_class_id], |r| r.get::<_, i64>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        v
+    };
+    for uid in admins {
+        notify(&tx, uid, "transfer", "收到新的转班申请，请在管理后台处理")?;
+    }
+    audit(&tx, &state.hmac, Some(a.uid), "transfer.create", Some("transfer"), Some(&id.to_string()), None)?;
+    tx.commit()?;
+    Ok(Json(json!({"id":id})))
+}
+
+async fn my_transfers(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<Json<Vec<TransferDto>>> {
+    let a = auth(&state, &headers)?;
+    let conn = state.db.lock().unwrap();
+    let ids: Vec<i64> = {
+        let mut stmt = conn.prepare("SELECT id FROM transfers WHERE uid=?1 ORDER BY id DESC LIMIT 20")?;
+        let v = stmt
+            .query_map(params![a.uid], |r| r.get::<_, i64>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        v
+    };
+    let mut out = Vec::new();
+    for id in ids {
+        if let Some(t) = load_transfer(&conn, id)? {
+            out.push(t);
+        }
+    }
+    Ok(Json(out))
+}
+
+async fn admin_transfers(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<Json<Vec<TransferDto>>> {
+    let a = auth(&state, &headers)?;
+    if !is_admin(&a) {
+        return Err(AppError::forbidden("需要管理员权限"));
+    }
+    let conn = state.db.lock().unwrap();
+    let ids: Vec<i64> = {
+        let mut stmt = if a.role == "root" {
+            conn.prepare("SELECT id FROM transfers ORDER BY (status IN ('pending','out_approved','in_approved')) DESC, id DESC LIMIT 200")?
+        } else {
+            conn.prepare(
+                "SELECT id FROM transfers WHERE from_class_id=?1 OR to_class_id=?1 ORDER BY (status IN ('pending','out_approved','in_approved')) DESC, id DESC LIMIT 200",
+            )?
+        };
+        let v = if a.role == "root" {
+            stmt.query_map([], |r| r.get::<_, i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?
+        } else {
+            let cid = a.class_id.unwrap_or(0);
+            stmt.query_map(params![cid], |r| r.get::<_, i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        v
+    };
+    let mut out = Vec::new();
+    for id in ids {
+        if let Some(t) = load_transfer(&conn, id)? {
+            out.push(t);
+        }
+    }
+    Ok(Json(out))
+}
+
+async fn transfer_action(State(state): State<AppState>, headers: HeaderMap, Path(id): Path<i64>, Json(req): Json<TransferActionRequest>) -> ApiResult<Json<Value>> {
+    let a = auth(&state, &headers)?;
+    if !is_admin(&a) {
+        return Err(AppError::forbidden("需要管理员权限"));
+    }
+    let conn = state.db.lock().unwrap();
+    let t = load_transfer(&conn, id)?.ok_or_else(|| AppError::not_found("转班申请不存在"))?;
+    if t.status == "approved" || t.status == "rejected" {
+        return Err(AppError::conflict("该申请已结束"));
+    }
+    let authorized = a.role == "root" || a.class_id == Some(t.from_class_id) || a.class_id == Some(t.to_class_id);
+    if !authorized {
+        return Err(AppError::forbidden("无权处理该转班申请"));
+    }
+    let tx = conn.unchecked_transaction()?;
+    if req.action == "reject" {
+        tx.execute("UPDATE transfers SET status='rejected' WHERE id=?1", params![id])?;
+        notify(
+            &tx,
+            t.uid,
+            "transfer",
+            &format!("转班申请被拒绝：{} → {}", t.from_class_name, t.to_class_name),
+        )?;
+        audit(&tx, &state.hmac, Some(a.uid), "transfer.reject", Some("transfer"), Some(&id.to_string()), None)?;
+        tx.commit()?;
+        return Ok(Json(json!({"ok":true})));
+    }
+    if req.action != "approve" {
+        return Err(AppError::bad("未知的操作"));
+    }
+    let status: String;
+    let mut out_by = t.out_by;
+    let mut in_by = t.in_by;
+    if a.role == "root" {
+        status = "approved".to_string();
+        out_by = Some(a.uid);
+        in_by = Some(a.uid);
+    } else if a.class_id == Some(t.from_class_id) {
+        if t.status == "out_approved" {
+            return Err(AppError::conflict("转出班级已同意"));
+        }
+        out_by = Some(a.uid);
+        if t.status == "in_approved" {
+            status = "approved".to_string();
+        } else {
+            status = "out_approved".to_string();
+        }
+    } else {
+        if t.status == "in_approved" {
+            return Err(AppError::conflict("转入班级已同意"));
+        }
+        in_by = Some(a.uid);
+        if t.status == "out_approved" {
+            status = "approved".to_string();
+        } else {
+            status = "in_approved".to_string();
+        }
+    }
+    if status == "approved" {
+        tx.execute(
+            "UPDATE users SET class_id=?1, roster_id=NULL WHERE uid=?2",
+            params![t.to_class_id, t.uid],
+        )?;
+        tx.execute("UPDATE roster_entries SET claimed_uid=NULL WHERE claimed_uid=?1", params![t.uid])?;
+        let old_conv: Option<i64> = tx
+            .query_row(
+                "SELECT id FROM conversations WHERE kind='class_group' AND class_id=?1",
+                params![t.from_class_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(c) = old_conv {
+            tx.execute("DELETE FROM conversation_members WHERE conv_id=?1 AND uid=?2", params![c, t.uid])?;
+        }
+        rotate_group_key(&tx, t.from_class_id)?;
+        rotate_group_key(&tx, t.to_class_id)?;
+        notify(
+            &tx,
+            t.uid,
+            "transfer",
+            &format!("转班成功：{} → {}，请重新进入班级群", t.from_class_name, t.to_class_name),
+        )?;
+    } else {
+        let side = if status == "out_approved" { "转出班级" } else { "转入班级" };
+        notify(&tx, t.uid, "transfer", &format!("{side}已同意你的转班申请，等待另一方审批"))?;
+    }
+    tx.execute(
+        "UPDATE transfers SET status=?1,
+           out_by=COALESCE(?2,out_by), out_at=CASE WHEN ?2 IS NULL THEN out_at ELSE ?3 END,
+           in_by=COALESCE(?4,in_by), in_at=CASE WHEN ?4 IS NULL THEN in_at ELSE ?3 END
+         WHERE id=?5",
+        params![status, out_by, now(), in_by, id],
+    )?;
+    audit(&tx, &state.hmac, Some(a.uid), "transfer.approve", Some("transfer"), Some(&id.to_string()), Some(&status))?;
+    tx.commit()?;
+    Ok(Json(json!({"ok":true,"status":status})))
+}
+
 async fn create_request(State(state): State<AppState>, headers: HeaderMap, Json(req): Json<FriendRequestCreate>) -> ApiResult<Json<Value>> {
     let a = auth(&state, &headers)?;
     if req.to_uid == a.uid {
@@ -2486,10 +2718,17 @@ CREATE TABLE IF NOT EXISTS reports (
   status TEXT NOT NULL DEFAULT 'pending', created_at INTEGER NOT NULL,
   handled_by INTEGER, handled_at INTEGER, action TEXT, detail TEXT
 );
+CREATE TABLE IF NOT EXISTS transfers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, uid INTEGER NOT NULL,
+  from_class_id INTEGER NOT NULL, to_class_id INTEGER NOT NULL,
+  reason TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending',
+  out_by INTEGER, out_at INTEGER, in_by INTEGER, in_at INTEGER, created_at INTEGER NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conv_id,id);
 CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts);
 CREATE INDEX IF NOT EXISTS idx_notifications_uid ON notifications(uid,id);
 CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status,id);
+CREATE INDEX IF NOT EXISTS idx_transfers_status ON transfers(status,id);
 "#;
 
 fn init_db(conn: &Connection) -> rusqlite::Result<()> {
@@ -2714,6 +2953,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/admin/reports", get(admin_reports))
         .route("/api/v1/admin/reports/:id/resolve", post(resolve_report))
         .route("/api/v1/admin/users/:uid/action", post(admin_user_action))
+        .route("/api/v1/transfers", get(my_transfers).post(create_transfer))
+        .route("/api/v1/admin/transfers", get(admin_transfers))
+        .route("/api/v1/admin/transfers/:id/action", post(transfer_action))
         .route("/api/v1/friends/requests", get(list_requests).post(create_request))
         .route("/api/v1/friends/requests/:id/accept", post(accept_request))
         .route("/api/v1/friends/requests/:id/decline", post(decline_request))

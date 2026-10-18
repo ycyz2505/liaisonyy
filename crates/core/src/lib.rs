@@ -551,6 +551,33 @@ pub struct UserActionRequest {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct TransferDto {
+    pub id: i64,
+    pub uid: i64,
+    pub display_name: String,
+    pub from_class_id: i64,
+    pub from_class_name: String,
+    pub to_class_id: i64,
+    pub to_class_name: String,
+    pub reason: String,
+    pub status: String,
+    pub out_by: Option<i64>,
+    pub in_by: Option<i64>,
+    pub created_at: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CreateTransferRequest {
+    pub to_class_id: i64,
+    pub reason: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct TransferActionRequest {
+    pub action: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AuditEntry {
     pub id: i64,
     pub ts: i64,

@@ -206,6 +206,33 @@ export interface ReportDto {
   detail: string | null;
 }
 
+export interface TransferDto {
+  id: number;
+  uid: number;
+  display_name: string;
+  from_class_id: number;
+  from_class_name: string;
+  to_class_id: number;
+  to_class_name: string;
+  reason: string;
+  status: string;
+  out_by: number | null;
+  in_by: number | null;
+  created_at: number;
+}
+
+export interface MeResponse {
+  uid: number;
+  handle: string;
+  display_name: string;
+  real_name: string;
+  class_id: number | null;
+  role: string;
+  login_policy: string;
+  public_key: string;
+  avatar_file_id: number | null;
+}
+
 export interface AuditEntry {
   id: number;
   ts: number;
@@ -296,7 +323,11 @@ export type Cmd =
   | { type: "Report"; data: { target_type: string; target_id: number; reason: string } }
   | { type: "AdminReports" }
   | { type: "ResolveReport"; data: { id: number; action: string; minutes: number | null } }
-  | { type: "AdminUserAction"; data: { uid: number; action: string; minutes: number | null } };
+  | { type: "AdminUserAction"; data: { uid: number; action: string; minutes: number | null } }
+  | { type: "CreateTransfer"; data: { to_class_id: number; reason: string } }
+  | { type: "MyTransfers" }
+  | { type: "AdminTransfers" }
+  | { type: "TransferAction"; data: { id: number; action: string } };
 
 export type Ev =
   | { type: "Bootstrap"; data: BootstrapResponse }
@@ -332,6 +363,9 @@ export type Ev =
   | { type: "Reports"; data: ReportDto[] }
   | { type: "ReportCreated" }
   | { type: "AnnouncementCreated"; data: { id: number } }
+  | { type: "Transfers"; data: TransferDto[] }
+  | { type: "AdminTransfers"; data: TransferDto[] }
+  | { type: "MeUpdated"; data: MeResponse }
   | { type: "Toast"; data: string }
   | { type: "Error"; data: string }
   | { type: "Offline"; data: boolean };
