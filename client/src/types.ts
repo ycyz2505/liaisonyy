@@ -397,7 +397,13 @@ export type Cmd =
   | { type: "ApplyUpdate"; data: { url: string; sha256: string } }
   | {
       type: "AdminUpdatePackage";
-      data: { data: string; version: string; min_client: string; signature: string };
+      data: {
+        data: string;
+        version: string;
+        min_client: string;
+        signature: string;
+        url: string | null;
+      };
     };
 
 export type Ev =

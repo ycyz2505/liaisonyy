@@ -1,3 +1,5 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 use axum::{
     body::Body,
     extract::{
@@ -3146,6 +3148,11 @@ async fn admin_upload_update(State(state): State<AppState>, headers: HeaderMap, 
     let dir = state.data.join("update");
     std::fs::create_dir_all(&dir)?;
     std::fs::write(dir.join("package.exe"), &bytes)?;
+    let package_url = req
+        .url
+        .filter(|u| u.starts_with("https://") || u.starts_with("http://"))
+        .filter(|u| u.len() <= 500)
+        .unwrap_or_else(|| "/api/v1/update/package".to_string());
     let manifest = json!({
         "schema": 1,
         "version": req.version,
@@ -3153,7 +3160,7 @@ async fn admin_upload_update(State(state): State<AppState>, headers: HeaderMap, 
         "signature": req.signature,
         "files": {
             "windows": {
-                "url": "/api/v1/update/package",
+                "url": package_url,
                 "sha256": sha,
                 "size": bytes.len()
             }
@@ -3399,7 +3406,7 @@ fn apply_pending_restore(data: &FsPath) -> anyhow::Result<()> {
         && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
     let src = data.join("backups").join(&name);
     if !valid || !src.join("liaisonyy.db").exists() {
-        eprintln!("WARN: invalid restore request, ignored");
+        tracing::warn!("invalid restore request, ignored");
         let _ = std::fs::remove_file(&marker);
         return Ok(());
     }
@@ -3426,7 +3433,7 @@ fn apply_pending_restore(data: &FsPath) -> anyhow::Result<()> {
     }
     std::fs::copy(src.join("liaisonyy.db"), data.join("liaisonyy.db"))?;
     std::fs::remove_file(&marker)?;
-    eprintln!("restored backup {name}; previous data saved in {}", safety.display());
+    tracing::info!("restored backup {name}; previous data saved in {}", safety.display());
     Ok(())
 }
 
@@ -3564,7 +3571,7 @@ fn spawn_discovery(api_port: u16) {
         let sock = match UdpSocket::bind(("0.0.0.0", 47821)) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("WARN: discovery disabled (UDP 47821): {e}");
+                tracing::warn!("discovery disabled (UDP 47821): {e}");
                 return;
             }
         };
@@ -3588,11 +3595,29 @@ fn spawn_discovery(api_port: u16) {
     });
 }
 
+fn main() {
+    std::panic::set_hook(Box::new(|info| {
+        let dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("data")))
+            .unwrap_or_else(|| PathBuf::from("data"));
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(dir.join("panic.txt"), format!("{info}\n"));
+    }));
+    if let Err(e) = run() {
+        let dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("data")))
+            .unwrap_or_else(|| PathBuf::from("data"));
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(dir.join("last_error.txt"), format!("{e:?}\n"));
+        #[cfg(not(windows))]
+        eprintln!("liaisonyy failed: {e:?}");
+    }
+}
+
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env().add_directive("info".parse()?))
-        .init();
+async fn run() -> anyhow::Result<()> {
     let exe_dir = std::env::current_exe()?
         .parent()
         .unwrap_or_else(|| FsPath::new("."))
@@ -3644,22 +3669,24 @@ async fn main() -> anyhow::Result<()> {
             let appdata = std::env::var("APPDATA")?;
             let dir = PathBuf::from(appdata)
                 .join("Microsoft\\Windows\\Start Menu\\Programs\\Startup");
-            let p = dir.join("liaisonyy-server.cmd");
+            let p = dir.join("liaisonyy-server.vbs");
             if remove_autostart {
                 let _ = std::fs::remove_file(&p);
+                let _ = std::fs::remove_file(dir.join("liaisonyy-server.cmd"));
                 println!("autostart removed: {}", p.display());
             } else {
                 std::fs::create_dir_all(&dir)?;
                 let exe = std::env::current_exe()?;
                 let workdir = exe.parent().unwrap_or_else(|| FsPath::new("."));
                 let script = format!(
-                    "@echo off\r\ncd /d \"{}\"\r\nstart \"\" \"{}\" --data-dir \"{}\" --port {}\r\n",
+                    "Set sh = CreateObject(\"WScript.Shell\")\r\nsh.CurrentDirectory = \"{}\"\r\nsh.Run \"\"\"{}\"\" --data-dir \"\"{}\"\" --port {}\", 0, False\r\n",
                     workdir.display(),
                     exe.display(),
                     data.display(),
                     port
                 );
                 std::fs::write(&p, script)?;
+                let _ = std::fs::remove_file(dir.join("liaisonyy-server.cmd"));
                 println!("autostart installed: {}", p.display());
             }
         }
@@ -3670,6 +3697,33 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     std::fs::create_dir_all(&data)?;
+    #[cfg(windows)]
+    {
+        let log_dir = data.join("logs");
+        std::fs::create_dir_all(&log_dir)?;
+        if let Ok(file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_dir.join("server.log"))
+        {
+            let _ = tracing_subscriber::fmt()
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::from_default_env()
+                        .add_directive("info".parse()?),
+                )
+                .with_writer(std::sync::Mutex::new(file))
+                .try_init();
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::from_default_env()
+                    .add_directive("info".parse()?),
+            )
+            .try_init();
+    }
     apply_pending_restore(&data)?;
     spawn_discovery(port);
     let conn = Connection::open(data.join("liaisonyy.db"))?;
@@ -3685,7 +3739,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     if sync_network_time().is_none() {
-        eprintln!("WARN: network time sync failed; using local clock until next retry");
+        tracing::warn!("network time sync failed; using local clock until next retry");
     }
     std::thread::spawn(|| loop {
         std::thread::sleep(Duration::from_secs(3600));
@@ -3780,12 +3834,12 @@ async fn main() -> anyhow::Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let config = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key).await?;
     let addr: SocketAddr = format!("0.0.0.0:{port}").parse()?;
-    println!("liaisonyy server data: {}", data.display());
+    tracing::info!("liaisonyy server data: {}", data.display());
     if !setup_token.is_empty() {
-        println!("SETUP TOKEN: {setup_token}");
+        tracing::info!("SETUP TOKEN: {setup_token} (also in data/setup_token.txt)");
     }
-    println!("API:   https://127.0.0.1:{port}/api/v1/health");
-    println!("Admin: https://127.0.0.1:{port}/admin");
+    tracing::info!("API:   https://127.0.0.1:{port}/api/v1/health");
+    tracing::info!("Admin: https://127.0.0.1:{port}/admin");
     axum_server::bind_rustls(addr, config)
         .serve(app.into_make_service())
         .await?;

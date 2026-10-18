@@ -84,6 +84,7 @@ cargo run -p update-sign -- sign 0.2.0 0.1.0 <sha256> <private>
 - 构建客户端时设置环境变量 `LIAISONYY_UPDATE_PUBKEY=<public>`（CI 里放 GitHub Secret）。
 - 服务端运行时也设置同一个 `LIAISONYY_UPDATE_PUBKEY`，否则拒绝上传更新包。
 - 管理后台「发布客户端更新」填写版本号、最低可用版本、签名并选择 exe；客户端下次启动检查并更新。
+- 可在「更新包地址」填写 GitHub Releases / Cloudflare Pages 等绝对 URL（留空则用本机 `/api/v1/update/package`）。
 - 强制更新：`min_client` 大于客户端当前版本时，客户端必须更新后才能继续。
 
 ---
@@ -99,7 +100,7 @@ cd D:\liaisonyy
 .\liaisonyy-server.exe --data-dir D:\liaisonyy\data --port 47820
 ```
 
-首次启动会打印 `SETUP TOKEN: ...`。用客户端连接 `https://127.0.0.1:47820` 并初始化。
+首次启动会把初始化口令写入 `D:\liaisonyy\data\setup_token.txt`。Windows 下服务端以**无控制台窗口**方式静默运行，日志写入 `data\logs\server.log`；用客户端连接 `https://127.0.0.1:47820` 并初始化。
 
 也可在 exe 同目录放 `config.toml`：
 
@@ -159,6 +160,8 @@ data_dir = "data"
 | 消息/好友申请/举报限流 | ✅ |
 | 23 并发账号压测（184 条消息） | ✅ |
 | 服务端 config.toml | ✅ |
+| 服务端 Windows 静默运行（无控制台） | ✅ |
+| 崩溃恢复测试（硬杀后重启） | ✅ |
 | X25519 + AES-256-GCM 信封加密 | ✅ |
 | 班级/名单/总管理员初始化 | ✅ |
 | 好友申请/接受/拒绝 | ✅ |

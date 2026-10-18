@@ -127,7 +127,7 @@ pub enum Cmd {
     Nudge,
     CheckUpdate,
     ApplyUpdate { url: String, sha256: String },
-    AdminUpdatePackage { data: String, version: String, min_client: String, signature: String },
+    AdminUpdatePackage { data: String, version: String, min_client: String, signature: String, url: Option<String> },
 }
 
 #[derive(Serialize, Clone)]
@@ -1011,7 +1011,7 @@ impl Worker {
                     self.err(e);
                 }
             }
-            Cmd::AdminUpdatePackage { data, version, min_client, signature } => {
+            Cmd::AdminUpdatePackage { data, version, min_client, signature, url } => {
                 let r = self.token().and_then(|t| {
                     self.call(
                         "POST",
@@ -1021,7 +1021,8 @@ impl Worker {
                             "data": data,
                             "version": version,
                             "min_client": min_client,
-                            "signature": signature
+                            "signature": signature,
+                            "url": url
                         })),
                     )
                 });

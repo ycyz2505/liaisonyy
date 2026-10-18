@@ -8,6 +8,7 @@ const updVersion = ref("");
 const updMin = ref("");
 const updSig = ref("");
 const updData = ref("");
+const updUrl = ref("");
 
 function pickUpdate(e: Event) {
   const input = e.target as HTMLInputElement;
@@ -37,6 +38,7 @@ function uploadUpdate() {
       version: updVersion.value.trim(),
       min_client: updMin.value.trim(),
       signature: updSig.value.trim(),
+      url: updUrl.value.trim() || null,
     },
   });
 }
@@ -379,6 +381,8 @@ function back() {
       <input v-model="updMin" placeholder="0.2.0" />
       <label>签名（base64）</label>
       <input v-model="updSig" placeholder="Ed25519 签名" />
+      <label>更新包地址（可选，留空使用本机）</label>
+      <input v-model="updUrl" placeholder="https://.../liaisonyy.exe" />
       <label>更新包（liaisonyy.exe）</label>
       <input type="file" accept=".exe,application/octet-stream" @change="pickUpdate" />
       <button :disabled="!updData" style="margin-top: 8px" @click="uploadUpdate">

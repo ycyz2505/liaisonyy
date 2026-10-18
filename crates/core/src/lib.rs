@@ -652,6 +652,8 @@ pub struct UpdatePackageRequest {
     pub version: String,
     pub min_client: String,
     pub signature: String,
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
