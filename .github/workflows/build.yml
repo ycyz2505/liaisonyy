@@ -73,9 +73,13 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force artifact | Out-Null
-          if (Test-Path target/release/liaisonyy.exe) { Copy-Item target/release/liaisonyy.exe artifact/ }
+          $exe = Get-ChildItem -Path target -Recurse -Filter "liaisonyy-client.exe" -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match '\\release\\' } | Select-Object -First 1
+          if (-not $exe) { $exe = Get-ChildItem -Path target -Recurse -Filter "liaisonyy.exe" -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match '\\release\\' } | Select-Object -First 1 }
+          if (-not $exe) { throw "client exe not found" }
+          Copy-Item $exe.FullName artifact/liaisonyy.exe
           $dll = Get-ChildItem -Path target -Recurse -Filter WebView2Loader.dll -ErrorAction SilentlyContinue | Select-Object -First 1
-          if ($dll) { Copy-Item $dll.FullName artifact/ }
+          if (-not $dll) { throw "WebView2Loader.dll not found" }
+          Copy-Item $dll.FullName artifact/
           Get-ChildItem artifact | Format-Table Name, Length
       - name: Check client dependencies
         shell: pwsh
