@@ -2,7 +2,7 @@
 
 杨村一中（杨一）内网聊天系统 · liaison + YangYi
 
-> 0.3.0：在 0.2.0 全部功能基础上，内置 **my_rime（RIME WASM）中文输入法**，支持 **26 键与 9 键**、候选/翻页/中英切换，离线可用。
+> 0.3.1：自带中文键盘因 bug 暂时下线，文本输入改用系统输入法；PIN/密码页面的自带键盘保留。新增 liaisonyy 用户 QQ 群 1130941127；窗口大小按屏幕分辨率比例自适应。
 > 客户端已迁移到 **Tauri 2 + Vue 3 + TypeScript + 纯 CSS**；服务端与 `core` 加密/协议不变。
 > 设计稿见 [设计稿.md](设计稿.md)，使用指南见 [docs/](docs/)。
 
@@ -21,7 +21,6 @@ liaisonyy/
 │  └─ update-sign/            # Ed25519 更新签名工具
 ├─ client/
 │  ├─ src/                    # Vue 3 + TypeScript 前端
-│  ├─ public/myrime/          # my_rime WASM 中文输入法（AGPL/LGPL）
 │  ├─ src-tauri/              # Tauri Rust 后端（复用 net/store）
 │  ├─ package.json
 │  └─ vite.config.ts
@@ -80,7 +79,7 @@ npm run build
 ```bash
 cargo run -p update-sign -- keygen
 cargo run -p update-sign -- sha256 liaisonyy.exe
-cargo run -p update-sign -- sign 0.3.0 0.2.0 <sha256> <private>
+cargo run -p update-sign -- sign 0.3.1 0.3.0 <sha256> <private>
 ```
 
 - 构建客户端时设置环境变量 `LIAISONYY_UPDATE_PUBKEY=<public>`（CI 里放 GitHub Secret）。
@@ -88,6 +87,7 @@ cargo run -p update-sign -- sign 0.3.0 0.2.0 <sha256> <private>
 - 管理后台「发布客户端更新」填写版本号、最低可用版本、签名并选择 exe；客户端下次启动检查并更新。
 - 可在「更新包地址」填写 GitHub Releases / Cloudflare Pages 等绝对 URL（留空则用本机 `/api/v1/update/package`）。
 - 强制更新：`min_client` 大于客户端当前版本时，客户端必须更新后才能继续。
+- Cloudflare Pages 托管更新包的完整步骤见 [docs/CF-Pages自动更新指南.md](docs/CF-Pages自动更新指南.md)。
 
 ---
 
@@ -133,18 +133,16 @@ data_dir = "data"
 
 管理后台：`https://服务器IP:47820/admin`（自签证书需手动信任；保持原生 JS）。
 
-### 3.4 中文输入法
+### 3.4 输入法与 QQ 群
 
-- 聊天、资料、公告、好友附言等输入框右侧有「中」按钮，点开后显示候选栏与软键盘。
-- **键盘是独立的无边框置顶窗口**，不占主窗口布局；拖动顶部标题栏可移动到桌面任意位置，位置自动记忆；点输入框默认自动显示，顶部「自动」按钮可关闭/开启。
-- 支持 **26 键**（QWERTY）与 **9 键**（T9 数字键选字母）；候选可点击、空格选第一个、`‹ ›` 翻页。
-- `中/EN` 切换可直接输入英文；`26键/9键` 切换布局；输入内容按光标位置插入。
-- 引擎与词库全部在 `client/public/myrime/`（约 19 MB），**完全离线**，不访问 CDN；首次打开需要几秒加载。
-- 第三方组件：my_rime 0.10.9（AGPL-3.0-or-later）、朙月拼音/笔画方案（LGPL-3.0-only）。来源、修改与许可证见 `client/public/myrime/NOTICE.md` 及同目录 `LICENSE-*.txt`。
+- 聊天、资料、公告等文本输入使用**系统输入法**（微软拼音/搜狗等）。
+- PIN/密码页面的自带键盘保留：PIN 数字键盘、密码 QWERTY/符号键盘。
+- 自带中文键盘（26/9 键）因 bug 暂时下线，后续修复后再提供；当前不再加载 my_rime/WASM 资源。
+- liaisonyy 用户 QQ 群：**1130941127**。登录后「我」页可一键复制群号；欢迎反馈 bug、获取更新通知。
 
 ---
 
-## 4. 0.3.0 实现状态
+## 4. 0.3.1 实现状态
 
 | 模块 | 状态 |
 |---|---|
@@ -166,8 +164,9 @@ data_dir = "data"
 | 签名自动更新（强制/可选） | ✅ |
 | WebSocket 即时提醒（2 秒轮询兜底） | ✅ |
 | 单实例、老板键 Ctrl+Shift+H、托盘通知 | ✅ |
-| 完整软键盘（字母/数字/符号） | ✅ |
-| 内置中文输入法（my_rime，26/9 键） | ✅ |
+| PIN/密码页面自带键盘（中文键盘暂时下线） | ✅ |
+| 自适应窗口大小（按屏幕分辨率比例） | ✅ |
+| liaisonyy QQ 群 1130941127 | ✅ |
 | 本地缓存 DPAPI 加密、原子写入 | ✅ |
 | 消息/好友申请/举报限流 | ✅ |
 | 23 并发账号压测（184 条消息） | ✅ |
@@ -181,7 +180,7 @@ data_dir = "data"
 | 班级群（纯文本、密钥版本） | ✅ |
 | 重置密钥（8 位一次性） | ✅ |
 | 管理后台（统计/审计/名单） | ✅ |
-| Tauri 客户端：托盘/右下角小窗/大关闭按钮 | ✅（CI 已验证；4.01 MB + WebView2Loader.dll） |
+| Tauri 客户端：托盘/右下角小窗/大关闭按钮 | ✅（CI 构建；`liaisonyy.exe + WebView2Loader.dll`） |
 | 离线队列（密文）+ 轮询 | ✅ |
 | 服务端系统托盘 | ⏳ 后续版本 |
 
@@ -193,7 +192,7 @@ data_dir = "data"
 - 密码/PIN 用 Argon2id 派生；服务器只存 verify 和长度，不存明文。
 - 总管理员/班级管理员托管密钥按设计稿实现（内部机制，不对外披露）。
 - 客户端使用自签 TLS + **TOFU 指纹固定**：首次连接记录证书 SHA-256，之后指纹变化会拒绝连接；换服务端证书需由管理员在客户端设置里清除对应指纹后重连。
-- 中文输入法在本地 Web Worker 中运行，词库与引擎随客户端分发，**不联网**；输入内容只进入当前输入框。
+- 文本输入使用系统输入法；PIN/密码页面的自带键盘只处理密码/PIN，不加载外部输入法资源。
 - **自动更新**：清单用 Ed25519 签名、更新包校验 SHA-256；构建客户端时设置 `LIAISONYY_UPDATE_PUBKEY`（base64 公钥），服务端运行时也设置同一公钥才允许上传更新包。签名工具见 `crates/update-sign`。
 - **网络时间**：服务端启动/每小时从 NTP 或 HTTP Date 同步；客户端使用服务端时间 + 单调锚点，修改本机墙钟不影响消息时间和重置密钥剩余时间。
 - 本地缓存只存密文和包裹；退登清除内存密钥。
@@ -205,7 +204,9 @@ data_dir = "data"
 
 - 客户端以 WebSocket 即时提醒为主，2 秒轮询作为兜底与断线恢复。
 - 服务端没有系统托盘；开机自启可用 `--install-autostart` 写入启动文件夹（C 盘还原环境下可能失效）。
-- 内置中文输入法使用本地 WASM，首次打开需加载几秒；不打开时不会初始化输入法。客户端因此包含约 19 MB 的 my_rime/RIME 资源（AGPL/LGPL，见 `client/public/myrime/NOTICE.md`）。
+- 自带中文键盘（26/9 键）因 bug 暂时下线；文本输入使用系统输入法，PIN/密码页面键盘保留。
+- 小窗大小按当前屏幕逻辑高度 / 1.7、宽度 = 高度 / 1.79 自适应（高度限制 420–700 逻辑像素），低分辨率或高缩放下会自动缩小。
+- liaisonyy 用户 QQ 群：1130941127（登录后「我」页可复制）。
 - 自动更新仅支持 Windows；需要构建时与服务端同时配置 `LIAISONYY_UPDATE_PUBKEY`。
 - TOFU 首次连接仍可能被中间人抢先，之后指纹变化会被拒绝；换证书需管理员手动清除指纹。
 - 客户端分发是 `exe + WebView2Loader.dll` 两个文件（用户已接受）。
@@ -221,4 +222,5 @@ data_dir = "data"
 - [学生使用指南](docs/学生使用指南.md)
 - [班级管理员使用指南](docs/班级管理员使用指南.md)
 - [总管理员使用指南](docs/总管理员使用指南.md)
+- [用 Cloudflare Pages 做自动更新](docs/CF-Pages自动更新指南.md)
 - [设计稿](设计稿.md)

@@ -2,8 +2,6 @@
 import { computed, onMounted } from "vue";
 import { send } from "../api";
 import { formatTime, showError, state } from "../store";
-import ChineseInput from "../components/ChineseInput.vue";
-import ChineseTextarea from "../components/ChineseTextarea.vue";
 
 const isAdmin = computed(
   () => state.user?.role === "root" || state.user?.role === "class_admin",
@@ -80,9 +78,9 @@ function back() {
           </select>
         </template>
         <label>标题</label>
-        <ChineseInput v-model="state.annTitle" :maxlength="100" />
+        <input v-model="state.annTitle" maxlength="100" />
         <label>内容</label>
-        <ChineseTextarea v-model="state.annBody" :maxlength="5000" :rows="4" />
+        <textarea v-model="state.annBody" maxlength="5000"></textarea>
         <button class="primary" style="margin-top: 8px" @click="publish">发布</button>
       </div>
       <div class="sep"></div>

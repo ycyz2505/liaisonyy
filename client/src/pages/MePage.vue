@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { send } from "../api";
-import { state } from "../store";
+import { showToast, state } from "../store";
 import Avatar from "../components/Avatar.vue";
 
 const unread = computed(() => state.notifications.filter((n) => !n.read).length);
@@ -9,6 +9,11 @@ const unread = computed(() => state.notifications.filter((n) => !n.read).length)
 function openProfile() {
   send({ type: "GetMyProfile" });
   state.page = "Profile";
+}
+
+function copyQQ() {
+  void navigator.clipboard?.writeText("1130941127");
+  showToast("群号已复制：1130941127");
 }
 
 function logout() {
@@ -43,6 +48,15 @@ function logout() {
         </div>
       </div>
     </template>
+
+    <div class="card qq-card">
+      <div class="account-name">liaisonyy 用户 QQ 群</div>
+      <div class="account-sub">群号：1130941127</div>
+      <div class="small muted" style="margin-top: 4px">
+        遇到问题、想反馈 bug 或获取新版本通知，欢迎加群。
+      </div>
+      <button style="margin-top: 8px" @click="copyQQ">复制群号</button>
+    </div>
 
     <button class="primary" style="margin-top: 10px" @click="openProfile">我的资料</button>
     <button

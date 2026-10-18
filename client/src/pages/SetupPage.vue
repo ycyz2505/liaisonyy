@@ -2,7 +2,6 @@
 import { send } from "../api";
 import { state } from "../store";
 import Keyboard from "../components/Keyboard.vue";
-import ChineseInput from "../components/ChineseInput.vue";
 
 function submit() {
   send({
@@ -40,7 +39,7 @@ function finishSetup() {
     <label>总管理员 YY 号</label>
     <input v-model="state.setupHandle" placeholder="例如 admin" />
     <label>显示名称</label>
-    <ChineseInput v-model="state.setupDisplay" placeholder="例如 总管理员" :maxlength="20" />
+    <input v-model="state.setupDisplay" placeholder="例如 总管理员" />
     <label>密码（8 位以上，含字母和数字）</label>
     <input v-model="state.setupPassword" type="password" />
     <Keyboard v-model="state.setupPassword" />

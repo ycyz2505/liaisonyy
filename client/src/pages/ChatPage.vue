@@ -2,8 +2,6 @@
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { send, serverNowSec } from "../api";
 import { formatTime, newId, state } from "../store";
-import ChineseInput from "../components/ChineseInput.vue";
-import ChineseTextarea from "../components/ChineseTextarea.vue";
 
 const listRef = ref<HTMLElement | null>(null);
 
@@ -99,10 +97,10 @@ onMounted(() => {
     </div>
 
     <div class="chat-input">
-      <ChineseInput
+      <input
         v-model="state.chatInput"
         placeholder="输入消息"
-        @enter="sendMsg"
+        @keyup.enter="sendMsg"
       />
       <button class="primary" @click="sendMsg">发送</button>
     </div>
@@ -110,12 +108,11 @@ onMounted(() => {
     <div v-if="state.reportMessageId" class="modal-mask">
       <div class="modal">
         <h3 style="margin-top: 0">举报消息</h3>
-        <ChineseTextarea
+        <textarea
           v-model="state.reportReason"
-          :maxlength="500"
+          maxlength="500"
           placeholder="请说明举报理由（管理员处理时不会看到聊天内容）"
-          :rows="3"
-        />
+        ></textarea>
         <div class="row" style="margin-top: 8px">
           <button
             @click="

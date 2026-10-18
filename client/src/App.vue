@@ -1,12 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted } from "vue";
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { getSettings, isTauri, onEv, send, syncServerTime } from "./api";
+import { getSettings, onEv, send, syncServerTime } from "./api";
 import { handleEv, state } from "./store";
-import { ime } from "./ime/imeStore";
-import { rime } from "./ime/rime";
-import FloatingKeyboard from "./components/FloatingKeyboard.vue";
 import TopBar from "./components/TopBar.vue";
 import WelcomePage from "./pages/WelcomePage.vue";
 import SetupPage from "./pages/SetupPage.vue";
@@ -28,53 +23,9 @@ let unlisten: (() => void) | undefined;
 let timeTimer: number | undefined;
 let retryTimer: number | undefined;
 let noticeTimer: number | undefined;
-const imeUnlisteners: UnlistenFn[] = [];
-
-async function imeProbe() {
-  if (!isTauri) return;
-  try {
-    if (!(await invoke<boolean>("ime_probe_enabled"))) return;
-    await rime.init();
-    const ctx = await rime.process("nihao");
-    const candidates = (ctx.candidates ?? []).map((c) => c.text);
-    await invoke("ime_probe_result", {
-      ok: candidates.includes("你好"),
-      detail: JSON.stringify(candidates),
-    });
-  } catch (e) {
-    try {
-      await invoke("ime_probe_result", { ok: false, detail: String(e) });
-    } catch {
-      // diagnostic only
-    }
-  }
-}
 
 onMounted(async () => {
   unlisten = await onEv(handleEv);
-  if (isTauri) {
-    imeUnlisteners.push(
-      await listen<string>("ime-commit", (e) => {
-        ime.target?.insert(e.payload);
-      }),
-    );
-    imeUnlisteners.push(
-      await listen("ime-backspace", () => {
-        ime.target?.backspace();
-      }),
-    );
-    imeUnlisteners.push(
-      await listen("ime-enter", () => {
-        if (ime.target?.enter) ime.target.enter();
-        else ime.target?.insert("\n");
-      }),
-    );
-    imeUnlisteners.push(
-      await listen("ime-closed", () => {
-        ime.open = false;
-      }),
-    );
-  }
   const s = await getSettings();
   state.serverInput = s.server;
   state.classId = s.class_id;
@@ -87,7 +38,6 @@ onMounted(async () => {
     if (state.user) send({ type: "Notifications" });
   }, 60 * 1000);
   send({ type: "Bootstrap" });
-  void imeProbe();
   if (s.class_id != null) {
     send({ type: "Accounts", data: { class_id: s.class_id } });
   }
@@ -95,8 +45,6 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   unlisten?.();
-  for (const u of imeUnlisteners) u();
-  imeUnlisteners.length = 0;
   if (timeTimer) window.clearInterval(timeTimer);
   if (retryTimer) window.clearTimeout(retryTimer);
   if (noticeTimer) window.clearInterval(noticeTimer);
@@ -132,7 +80,6 @@ function applyUpdate() {
       <NotificationsPage v-else-if="state.page === 'Notifications'" />
       <AnnouncementsPage v-else-if="state.page === 'Announcements'" />
     </main>
-    <FloatingKeyboard v-if="ime.open && !isTauri" />
     <div v-if="state.toast" class="toast">{{ state.toast }}</div>
     <div v-if="state.error" class="error-bar">
       <span>{{ state.error }}</span>
