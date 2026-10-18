@@ -163,6 +163,47 @@ export interface AdminStats {
   classes: number;
   pending_requests: number;
   db_bytes: number;
+  reports_pending: number;
+  muted: number;
+  banned: number;
+}
+
+export interface NotificationDto {
+  id: number;
+  kind: string;
+  text: string;
+  created_at: number;
+  read: boolean;
+}
+
+export interface AnnouncementDto {
+  id: number;
+  scope: string;
+  class_id: number | null;
+  class_name: string | null;
+  title: string;
+  body: string;
+  created_by: number;
+  created_by_name: string;
+  created_at: number;
+}
+
+export interface ReportDto {
+  id: number;
+  reporter_uid: number;
+  reporter_name: string;
+  target_type: string;
+  target_id: number;
+  target_uid: number | null;
+  target_name: string | null;
+  message_id: number | null;
+  conv_id: number | null;
+  reason: string;
+  status: string;
+  created_at: number;
+  handled_by: number | null;
+  action: string | null;
+  detail: string | null;
 }
 
 export interface AuditEntry {
@@ -246,7 +287,16 @@ export type Cmd =
   | { type: "BlockUser"; data: { uid: number } }
   | { type: "UnblockUser"; data: { uid: number } }
   | { type: "ListBlocks" }
-  | { type: "FetchFile"; data: { id: number } };
+  | { type: "FetchFile"; data: { id: number } }
+  | { type: "Notifications" }
+  | { type: "MarkNotificationsRead" }
+  | { type: "Announcements" }
+  | { type: "CreateAnnouncement"; data: { scope: string; class_id: number | null; title: string; body: string } }
+  | { type: "DeleteAnnouncement"; data: { id: number } }
+  | { type: "Report"; data: { target_type: string; target_id: number; reason: string } }
+  | { type: "AdminReports" }
+  | { type: "ResolveReport"; data: { id: number; action: string; minutes: number | null } }
+  | { type: "AdminUserAction"; data: { uid: number; action: string; minutes: number | null } };
 
 export type Ev =
   | { type: "Bootstrap"; data: BootstrapResponse }
@@ -277,6 +327,11 @@ export type Ev =
   | { type: "PasswordChanged" }
   | { type: "PinChanged" }
   | { type: "LoginPolicyChanged"; data: { policy: string } }
+  | { type: "Notifications"; data: NotificationDto[] }
+  | { type: "Announcements"; data: AnnouncementDto[] }
+  | { type: "Reports"; data: ReportDto[] }
+  | { type: "ReportCreated" }
+  | { type: "AnnouncementCreated"; data: { id: number } }
   | { type: "Toast"; data: string }
   | { type: "Error"; data: string }
   | { type: "Offline"; data: boolean };

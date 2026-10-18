@@ -43,6 +43,19 @@ function sendMsg() {
   markRead();
 }
 
+function startReport(id: number) {
+  if (id <= 0) return;
+  state.reportMessageId = id;
+  state.reportReason = "";
+}
+
+function submitReport() {
+  const id = state.reportMessageId;
+  const reason = state.reportReason.trim();
+  if (!id || !reason) return;
+  send({ type: "Report", data: { target_type: "message", target_id: id, reason } });
+}
+
 watch(msgs, scrollBottom, { deep: true });
 onMounted(() => {
   if (convId.value != null) {
@@ -71,6 +84,13 @@ onMounted(() => {
         <div class="bubble">{{ m.text }}</div>
         <div class="msg-time">
           {{ formatTime(m.created_at) }}<span v-if="m.pending"> ⏳</span>
+          <button
+            v-if="!m.mine && !m.pending"
+            class="link report-link"
+            @click="startReport(m.id)"
+          >
+            举报
+          </button>
         </div>
       </div>
       <div v-if="msgs.length === 0" class="empty">还没有消息</div>
@@ -83,6 +103,30 @@ onMounted(() => {
         @keyup.enter="sendMsg"
       />
       <button class="primary" @click="sendMsg">发送</button>
+    </div>
+
+    <div v-if="state.reportMessageId" class="modal-mask">
+      <div class="modal">
+        <h3 style="margin-top: 0">举报消息</h3>
+        <textarea
+          v-model="state.reportReason"
+          maxlength="500"
+          placeholder="请说明举报理由（管理员处理时不会看到聊天内容）"
+        ></textarea>
+        <div class="row" style="margin-top: 8px">
+          <button
+            @click="
+              state.reportMessageId = null;
+              state.reportReason = '';
+            "
+          >
+            取消
+          </button>
+          <button class="primary" :disabled="!state.reportReason.trim()" @click="submitReport">
+            提交举报
+          </button>
+        </div>
+      </div>
     </div>
   </div>
 </template>

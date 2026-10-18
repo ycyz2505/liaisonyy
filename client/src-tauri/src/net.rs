@@ -95,6 +95,15 @@ pub enum Cmd {
     UnblockUser { uid: i64 },
     ListBlocks,
     FetchFile { id: i64 },
+    Notifications,
+    MarkNotificationsRead,
+    Announcements,
+    CreateAnnouncement { scope: String, class_id: Option<i64>, title: String, body: String },
+    DeleteAnnouncement { id: i64 },
+    Report { target_type: String, target_id: i64, reason: String },
+    AdminReports,
+    ResolveReport { id: i64, action: String, minutes: Option<i64> },
+    AdminUserAction { uid: i64, action: String, minutes: Option<i64> },
 }
 
 #[derive(Serialize, Clone)]
@@ -128,6 +137,11 @@ pub enum Ev {
     PasswordChanged,
     PinChanged,
     LoginPolicyChanged { policy: String },
+    Notifications(Vec<NotificationDto>),
+    Announcements(Vec<AnnouncementDto>),
+    Reports(Vec<ReportDto>),
+    ReportCreated,
+    AnnouncementCreated { id: i64 },
     Toast(String),
     Error(String),
     Offline(bool),
@@ -529,6 +543,117 @@ impl Worker {
                 Ok((mime, data)) => self.send(Ev::FileData { id, mime, data }),
                 Err(e) => self.err(e),
             },
+            Cmd::Notifications => match self.do_get::<Vec<NotificationDto>>("/api/v1/notifications") {
+                Ok(v) => self.send(Ev::Notifications(v)),
+                Err(e) => self.err(e),
+            },
+            Cmd::MarkNotificationsRead => {
+                let r = self.token().and_then(|t| self.call("POST", "/api/v1/notifications/read", Some(&t), Some(json!({}))));
+                match r {
+                    Ok(_) => {
+                        if let Ok(v) = self.do_get::<Vec<NotificationDto>>("/api/v1/notifications") {
+                            self.send(Ev::Notifications(v));
+                        }
+                    }
+                    Err(e) => self.err(e),
+                }
+            }
+            Cmd::Announcements => match self.do_get::<Vec<AnnouncementDto>>("/api/v1/announcements") {
+                Ok(v) => self.send(Ev::Announcements(v)),
+                Err(e) => self.err(e),
+            },
+            Cmd::CreateAnnouncement { scope, class_id, title, body } => {
+                let r = self.token().and_then(|t| {
+                    self.call(
+                        "POST",
+                        "/api/v1/admin/announcements",
+                        Some(&t),
+                        Some(json!({"scope": scope, "class_id": class_id, "title": title, "body": body})),
+                    )
+                });
+                match r {
+                    Ok(v) => {
+                        let id = v.get("id").and_then(|x| x.as_i64()).unwrap_or(0);
+                        self.toast("公告已发布");
+                        self.send(Ev::AnnouncementCreated { id });
+                        if let Ok(v) = self.do_get::<Vec<AnnouncementDto>>("/api/v1/announcements") {
+                            self.send(Ev::Announcements(v));
+                        }
+                    }
+                    Err(e) => self.err(e),
+                }
+            }
+            Cmd::DeleteAnnouncement { id } => {
+                let r = self.token().and_then(|t| self.call("DELETE", &format!("/api/v1/admin/announcements/{id}"), Some(&t), None));
+                match r {
+                    Ok(_) => {
+                        self.toast("公告已删除");
+                        if let Ok(v) = self.do_get::<Vec<AnnouncementDto>>("/api/v1/announcements") {
+                            self.send(Ev::Announcements(v));
+                        }
+                    }
+                    Err(e) => self.err(e),
+                }
+            }
+            Cmd::Report { target_type, target_id, reason } => {
+                let r = self.token().and_then(|t| {
+                    self.call(
+                        "POST",
+                        "/api/v1/reports",
+                        Some(&t),
+                        Some(json!({"target_type": target_type, "target_id": target_id, "reason": reason})),
+                    )
+                });
+                match r {
+                    Ok(_) => {
+                        self.toast("举报已提交，管理员会尽快处理");
+                        self.send(Ev::ReportCreated);
+                    }
+                    Err(e) => self.err(e),
+                }
+            }
+            Cmd::AdminReports => match self.do_get::<Vec<ReportDto>>("/api/v1/admin/reports") {
+                Ok(v) => self.send(Ev::Reports(v)),
+                Err(e) => self.err(e),
+            },
+            Cmd::ResolveReport { id, action, minutes } => {
+                let r = self.token().and_then(|t| {
+                    self.call(
+                        "POST",
+                        &format!("/api/v1/admin/reports/{id}/resolve"),
+                        Some(&t),
+                        Some(json!({"action": action, "minutes": minutes})),
+                    )
+                });
+                match r {
+                    Ok(_) => {
+                        self.toast("已处理");
+                        if let Ok(v) = self.do_get::<Vec<ReportDto>>("/api/v1/admin/reports") {
+                            self.send(Ev::Reports(v));
+                        }
+                    }
+                    Err(e) => self.err(e),
+                }
+            }
+            Cmd::AdminUserAction { uid, action, minutes } => {
+                let r = self.token().and_then(|t| {
+                    self.call(
+                        "POST",
+                        &format!("/api/v1/admin/users/{uid}/action"),
+                        Some(&t),
+                        Some(json!({"action": action, "minutes": minutes})),
+                    )
+                });
+                match r {
+                    Ok(_) => {
+                        self.toast("操作已完成");
+                        if let Ok(v) = self.do_get::<Vec<ReportDto>>("/api/v1/admin/reports") {
+                            self.send(Ev::Reports(v));
+                        }
+                    }
+                    Err(e) => self.err(e),
+                }
+            }
         }
     }
 

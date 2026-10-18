@@ -1,7 +1,10 @@
 <script setup lang="ts">
+import { computed } from "vue";
 import { send } from "../api";
 import { state } from "../store";
 import Avatar from "../components/Avatar.vue";
+
+const unread = computed(() => state.notifications.filter((n) => !n.read).length);
 
 function openProfile() {
   send({ type: "GetMyProfile" });
@@ -42,6 +45,24 @@ function logout() {
     </template>
 
     <button class="primary" style="margin-top: 10px" @click="openProfile">我的资料</button>
+    <button
+      style="margin-top: 8px"
+      @click="
+        state.page = 'Announcements';
+        send({ type: 'Announcements' });
+      "
+    >
+      公告
+    </button>
+    <button
+      style="margin-top: 8px"
+      @click="
+        state.page = 'Notifications';
+        send({ type: 'Notifications' });
+      "
+    >
+      系统通知<template v-if="unread > 0">（{{ unread }}）</template>
+    </button>
     <button style="margin-top: 8px" @click="state.page = 'Security'">密码与 PIN</button>
     <button style="margin-top: 8px" @click="state.page = 'Settings'">设置</button>
     <button

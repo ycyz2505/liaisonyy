@@ -477,6 +477,77 @@ pub struct AdminStats {
     pub classes: i64,
     pub pending_requests: i64,
     pub db_bytes: i64,
+    pub reports_pending: i64,
+    pub muted: i64,
+    pub banned: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct NotificationDto {
+    pub id: i64,
+    pub kind: String,
+    pub text: String,
+    pub created_at: i64,
+    pub read: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct AnnouncementDto {
+    pub id: i64,
+    pub scope: String,
+    pub class_id: Option<i64>,
+    pub class_name: Option<String>,
+    pub title: String,
+    pub body: String,
+    pub created_by: i64,
+    pub created_by_name: String,
+    pub created_at: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CreateAnnouncementRequest {
+    pub scope: String,
+    pub class_id: Option<i64>,
+    pub title: String,
+    pub body: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ReportDto {
+    pub id: i64,
+    pub reporter_uid: i64,
+    pub reporter_name: String,
+    pub target_type: String,
+    pub target_id: i64,
+    pub target_uid: Option<i64>,
+    pub target_name: Option<String>,
+    pub message_id: Option<i64>,
+    pub conv_id: Option<i64>,
+    pub reason: String,
+    pub status: String,
+    pub created_at: i64,
+    pub handled_by: Option<i64>,
+    pub action: Option<String>,
+    pub detail: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CreateReportRequest {
+    pub target_type: String,
+    pub target_id: i64,
+    pub reason: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ResolveReportRequest {
+    pub action: String,
+    pub minutes: Option<i64>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct UserActionRequest {
+    pub action: String,
+    pub minutes: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

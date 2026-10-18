@@ -16,10 +16,13 @@ import ResetPage from "./pages/ResetPage.vue";
 import ProfilePage from "./pages/ProfilePage.vue";
 import SecurityPage from "./pages/SecurityPage.vue";
 import UserProfilePage from "./pages/UserProfilePage.vue";
+import NotificationsPage from "./pages/NotificationsPage.vue";
+import AnnouncementsPage from "./pages/AnnouncementsPage.vue";
 
 let unlisten: (() => void) | undefined;
 let timeTimer: number | undefined;
 let retryTimer: number | undefined;
+let noticeTimer: number | undefined;
 
 onMounted(async () => {
   unlisten = await onEv(handleEv);
@@ -31,6 +34,9 @@ onMounted(async () => {
   await syncServerTime();
   retryTimer = window.setTimeout(syncServerTime, 2500);
   timeTimer = window.setInterval(syncServerTime, 10 * 60 * 1000);
+  noticeTimer = window.setInterval(() => {
+    if (state.user) send({ type: "Notifications" });
+  }, 60 * 1000);
   send({ type: "Bootstrap" });
   if (s.class_id != null) {
     send({ type: "Accounts", data: { class_id: s.class_id } });
@@ -41,6 +47,7 @@ onBeforeUnmount(() => {
   unlisten?.();
   if (timeTimer) window.clearInterval(timeTimer);
   if (retryTimer) window.clearTimeout(retryTimer);
+  if (noticeTimer) window.clearInterval(noticeTimer);
 });
 </script>
 
@@ -64,6 +71,8 @@ onBeforeUnmount(() => {
       <ProfilePage v-else-if="state.page === 'Profile'" />
       <SecurityPage v-else-if="state.page === 'Security'" />
       <UserProfilePage v-else-if="state.page === 'UserProfile'" />
+      <NotificationsPage v-else-if="state.page === 'Notifications'" />
+      <AnnouncementsPage v-else-if="state.page === 'Announcements'" />
     </main>
     <div v-if="state.toast" class="toast">{{ state.toast }}</div>
     <div v-if="state.error" class="error-bar">

@@ -304,6 +304,7 @@ fn e2e_core_flow() {
     gk_b_arr.copy_from_slice(&gk_b);
     let cg_msgs = get(&a, &format!("{base}/api/v1/conversations/{cg_id}/messages?after=0"), Some(&rb.token));
     let cg_msg = cg_msgs.as_array().unwrap().iter().find(|m| m["sender_uid"] == ra.uid).unwrap();
+    let cg_msg_id = cg_msg["id"].as_i64().unwrap();
     let cg_pt = aead_decrypt(&gk_b_arr, &b64d(cg_msg["ciphertext"].as_str().unwrap()).unwrap(), cg_id.to_string().as_bytes()).unwrap();
     assert_eq!(String::from_utf8(cg_pt).unwrap(), "class hello");
 
@@ -456,6 +457,104 @@ fn e2e_core_flow() {
     call(&a, "DELETE", &format!("{base}/api/v1/friends/{}", ra.uid), Some(&rb.token), None);
     let friends_a = get(&a, &format!("{base}/api/v1/friends"), Some(&ra.token));
     assert!(friends_a.as_array().unwrap().is_empty());
+
+    // report a message, admin hides it
+    let rep = post(
+        &a,
+        &format!("{base}/api/v1/reports"),
+        Some(&rb.token),
+        json!({"target_type": "message", "target_id": cg_msg_id, "reason": "spam"}),
+    );
+    let report_id = rep["id"].as_i64().unwrap();
+    let reports = get(&a, &format!("{base}/api/v1/admin/reports"), Some(&root_token));
+    assert!(reports
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|r| r["id"].as_i64() == Some(report_id)));
+    post(
+        &a,
+        &format!("{base}/api/v1/admin/reports/{report_id}/resolve"),
+        Some(&root_token),
+        json!({"action": "hide_message", "minutes": null}),
+    );
+    let after_hide = get(&a, &format!("{base}/api/v1/conversations/{cg_id}/messages?after=0"), Some(&ra.token));
+    assert!(!after_hide
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|m| m["id"].as_i64() == Some(cg_msg_id)));
+
+    // announcement reaches the class and creates a notification
+    post(
+        &a,
+        &format!("{base}/api/v1/admin/announcements"),
+        Some(&root_token),
+        json!({"scope": "class", "class_id": class_id, "title": "测试公告", "body": "内容"}),
+    );
+    let anns = get(&a, &format!("{base}/api/v1/announcements"), Some(&ra.token));
+    assert!(anns.as_array().unwrap().iter().any(|x| x["title"] == "测试公告"));
+    let notifs = get(&a, &format!("{base}/api/v1/notifications"), Some(&ra.token));
+    assert!(notifs.as_array().unwrap().iter().any(|n| n["kind"] == "announcement"));
+
+    // mute blocks sending, unmute restores it
+    post(
+        &a,
+        &format!("{base}/api/v1/admin/users/{}/action", ra.uid),
+        Some(&root_token),
+        json!({"action": "mute", "minutes": 10}),
+    );
+    let ct4 = b64e(&aead_encrypt(&dek_arr, b"muted", conv_id.to_string().as_bytes()));
+    let (code, _) = call_status(
+        &a,
+        "POST",
+        &format!("{base}/api/v1/conversations/{conv_id}/messages"),
+        Some(&ra.token),
+        Some(json!({"key_version":1,"ciphertext":ct4,"client_msg_id":uuid()})),
+    );
+    assert_eq!(code, 403);
+    post(
+        &a,
+        &format!("{base}/api/v1/admin/users/{}/action", ra.uid),
+        Some(&root_token),
+        json!({"action": "unmute", "minutes": null}),
+    );
+    let ct5 = b64e(&aead_encrypt(&dek_arr, b"after mute", conv_id.to_string().as_bytes()));
+    post(
+        &a,
+        &format!("{base}/api/v1/conversations/{conv_id}/messages"),
+        Some(&ra.token),
+        json!({"key_version":1,"ciphertext":ct5,"client_msg_id":uuid()}),
+    );
+
+    // ban revokes login; unban restores it
+    post(
+        &a,
+        &format!("{base}/api/v1/admin/users/{}/action", ra.uid),
+        Some(&root_token),
+        json!({"action": "ban", "minutes": null}),
+    );
+    let (code, _) = call_status(
+        &a,
+        "POST",
+        &format!("{base}/api/v1/auth/login"),
+        None,
+        Some(json!({"uid_or_handle":"zhangsan","kind":"password","input":"NewPass123a"})),
+    );
+    assert!(code == 401 || code == 403, "banned login should fail, got {code}");
+    post(
+        &a,
+        &format!("{base}/api/v1/admin/users/{}/action", ra.uid),
+        Some(&root_token),
+        json!({"action": "unban", "minutes": null}),
+    );
+    let relogin = post(
+        &a,
+        &format!("{base}/api/v1/auth/login"),
+        None,
+        json!({"uid_or_handle":"zhangsan","kind":"password","input":"NewPass123a"}),
+    );
+    assert!(relogin["token"].as_str().is_some());
 
     // stats
     let stats = get(&a, &format!("{base}/api/v1/admin/stats"), Some(&root_token));

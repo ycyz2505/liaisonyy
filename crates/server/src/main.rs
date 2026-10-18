@@ -193,12 +193,24 @@ fn auth(state: &AppState, headers: &HeaderMap) -> ApiResult<AuthUser> {
     let conn = state.db.lock().unwrap();
     let row = conn
         .query_row(
-            "SELECT s.uid, u.role, u.class_id FROM sessions s JOIN users u ON u.uid=s.uid WHERE s.token_hmac=?1 AND s.revoked=0 AND s.expires_at>?2",
+            "SELECT s.uid, u.role, u.class_id FROM sessions s JOIN users u ON u.uid=s.uid WHERE s.token_hmac=?1 AND s.revoked=0 AND s.expires_at>?2 AND u.status='active'",
             params![h, now()],
             |r| Ok(AuthUser { uid: r.get(0)?, role: r.get(1)?, class_id: r.get(2)? }),
         )
         .optional()?;
     row.ok_or_else(|| AppError::unauthorized("登录已过期"))
+}
+
+fn notify(conn: &Connection, uid: i64, kind: &str, text: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO notifications (uid,kind,text,created_at) VALUES (?1,?2,?3,?4)",
+        params![uid, kind, text, now()],
+    )?;
+    Ok(())
+}
+
+fn is_admin(a: &AuthUser) -> bool {
+    a.role == "root" || a.role == "class_admin"
 }
 
 fn create_session(conn: &Connection, hmac_key: &[u8], uid: i64) -> rusqlite::Result<String> {
@@ -1264,6 +1276,432 @@ async fn list_blocks(State(state): State<AppState>, headers: HeaderMap) -> ApiRe
     Ok(Json(out))
 }
 
+struct ReportTarget {
+    uid: Option<i64>,
+    name: Option<String>,
+    message_id: Option<i64>,
+    conv_id: Option<i64>,
+    class_id: Option<i64>,
+}
+
+fn report_target(conn: &Connection, target_type: &str, target_id: i64) -> ApiResult<Option<ReportTarget>> {
+    if target_type == "user" {
+        let r = conn
+            .query_row(
+                "SELECT uid,display_name,class_id FROM users WHERE uid=?1",
+                params![target_id],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<i64>>(2)?)),
+            )
+            .optional()?;
+        Ok(r.map(|(uid, name, class_id)| ReportTarget {
+            uid: Some(uid),
+            name: Some(name),
+            message_id: None,
+            conv_id: None,
+            class_id,
+        }))
+    } else if target_type == "message" {
+        let r = conn
+            .query_row(
+                "SELECT m.id,m.conv_id,m.sender_uid,u.display_name,u.class_id
+                 FROM messages m JOIN users u ON u.uid=m.sender_uid WHERE m.id=?1",
+                params![target_id],
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, i64>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, Option<i64>>(4)?,
+                    ))
+                },
+            )
+            .optional()?;
+        Ok(r.map(|(mid, cid, uid, name, class_id)| ReportTarget {
+            uid: Some(uid),
+            name: Some(name),
+            message_id: Some(mid),
+            conv_id: Some(cid),
+            class_id,
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
+fn can_moderate(a: &AuthUser, class_id: Option<i64>) -> bool {
+    a.role == "root" || (a.role == "class_admin" && a.class_id.is_some() && a.class_id == class_id)
+}
+
+async fn list_notifications(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<Json<Vec<NotificationDto>>> {
+    let a = auth(&state, &headers)?;
+    let conn = state.db.lock().unwrap();
+    let mut stmt = conn.prepare(
+        "SELECT id,kind,text,created_at,read FROM notifications WHERE uid=?1 ORDER BY id DESC LIMIT 100",
+    )?;
+    let rows = stmt.query_map(params![a.uid], |r| {
+        Ok(NotificationDto {
+            id: r.get(0)?,
+            kind: r.get(1)?,
+            text: r.get(2)?,
+            created_at: r.get(3)?,
+            read: r.get::<_, i64>(4)? != 0,
+        })
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(Json(out))
+}
+
+async fn mark_notifications_read(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<Json<Value>> {
+    let a = auth(&state, &headers)?;
+    let conn = state.db.lock().unwrap();
+    conn.execute("UPDATE notifications SET read=1 WHERE uid=?1 AND read=0", params![a.uid])?;
+    Ok(Json(json!({"ok":true})))
+}
+
+async fn list_announcements(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<Json<Vec<AnnouncementDto>>> {
+    let a = auth(&state, &headers)?;
+    let conn = state.db.lock().unwrap();
+    let mut stmt = conn.prepare(
+        "SELECT a.id,a.scope,a.class_id,c.name,a.title,a.body,a.created_by,u.display_name,a.created_at
+         FROM announcements a LEFT JOIN classes c ON c.id=a.class_id JOIN users u ON u.uid=a.created_by
+         WHERE a.scope='global' OR a.class_id=?1 ORDER BY a.id DESC LIMIT 100",
+    )?;
+    let rows = stmt.query_map(params![a.class_id], |r| {
+        Ok(AnnouncementDto {
+            id: r.get(0)?,
+            scope: r.get(1)?,
+            class_id: r.get(2)?,
+            class_name: r.get(3)?,
+            title: r.get(4)?,
+            body: r.get(5)?,
+            created_by: r.get(6)?,
+            created_by_name: r.get(7)?,
+            created_at: r.get(8)?,
+        })
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(Json(out))
+}
+
+async fn create_announcement(State(state): State<AppState>, headers: HeaderMap, Json(req): Json<CreateAnnouncementRequest>) -> ApiResult<Json<Value>> {
+    let a = auth(&state, &headers)?;
+    if !is_admin(&a) {
+        return Err(AppError::forbidden("需要管理员权限"));
+    }
+    let title = req.title.trim();
+    let body = req.body.trim();
+    if title.is_empty() || title.chars().count() > 100 {
+        return Err(AppError::bad("公告标题需 1-100 字"));
+    }
+    if body.is_empty() || body.chars().count() > 5000 {
+        return Err(AppError::bad("公告内容需 1-5000 字"));
+    }
+    let (scope, class_id): (String, Option<i64>) = match req.scope.as_str() {
+        "global" => {
+            if a.role != "root" {
+                return Err(AppError::forbidden("只有总管理员可以发布全校公告"));
+            }
+            ("global".to_string(), None)
+        }
+        "class" => {
+            let cid = if a.role == "class_admin" {
+                a.class_id.ok_or_else(|| AppError::forbidden("你还没有管理班级"))?
+            } else {
+                req.class_id.ok_or_else(|| AppError::bad("缺少班级"))?
+            };
+            let exists: Option<i64> = conn_query_class(&state, cid)?;
+            if exists.is_none() {
+                return Err(AppError::not_found("班级不存在"));
+            }
+            ("class".to_string(), Some(cid))
+        }
+        _ => return Err(AppError::bad("未知的公告范围")),
+    };
+    let conn = state.db.lock().unwrap();
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "INSERT INTO announcements (scope,class_id,title,body,created_by,created_at) VALUES (?1,?2,?3,?4,?5,?6)",
+        params![scope, class_id, title, body, a.uid, now()],
+    )?;
+    let id = tx.last_insert_rowid();
+    let text = format!("新公告：{title}");
+    let uids: Vec<i64> = {
+        let mut stmt = if class_id.is_some() {
+            tx.prepare("SELECT uid FROM users WHERE status='active' AND class_id=?1")?
+        } else {
+            tx.prepare("SELECT uid FROM users WHERE status='active'")?
+        };
+        let rows = if let Some(cid) = class_id {
+            stmt.query_map(params![cid], |r| r.get::<_, i64>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        } else {
+            stmt.query_map([], |r| r.get::<_, i64>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        rows
+    };
+    for uid in uids {
+        notify(&tx, uid, "announcement", &text)?;
+    }
+    audit(&tx, &state.hmac, Some(a.uid), "admin.announcement.create", Some("announcement"), Some(&id.to_string()), None)?;
+    tx.commit()?;
+    Ok(Json(json!({"id":id})))
+}
+
+fn conn_query_class(state: &AppState, cid: i64) -> ApiResult<Option<i64>> {
+    let conn = state.db.lock().unwrap();
+    Ok(conn
+        .query_row("SELECT id FROM classes WHERE id=?1 AND archived=0", params![cid], |r| r.get(0))
+        .optional()?)
+}
+
+async fn delete_announcement(State(state): State<AppState>, headers: HeaderMap, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
+    let a = auth(&state, &headers)?;
+    if !is_admin(&a) {
+        return Err(AppError::forbidden("需要管理员权限"));
+    }
+    let conn = state.db.lock().unwrap();
+    let (scope, class_id): (String, Option<i64>) = conn
+        .query_row("SELECT scope,class_id FROM announcements WHERE id=?1", params![id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .optional()?
+        .ok_or_else(|| AppError::not_found("公告不存在"))?;
+    if a.role != "root" && !(a.role == "class_admin" && scope == "class" && class_id == a.class_id) {
+        return Err(AppError::forbidden("无权删除该公告"));
+    }
+    conn.execute("DELETE FROM announcements WHERE id=?1", params![id])?;
+    audit(&conn, &state.hmac, Some(a.uid), "admin.announcement.delete", Some("announcement"), Some(&id.to_string()), None)?;
+    Ok(Json(json!({"ok":true})))
+}
+
+async fn create_report(State(state): State<AppState>, headers: HeaderMap, Json(req): Json<CreateReportRequest>) -> ApiResult<Json<Value>> {
+    let a = auth(&state, &headers)?;
+    let reason = req.reason.trim();
+    if reason.is_empty() || reason.chars().count() > 500 {
+        return Err(AppError::bad("举报理由需 1-500 字"));
+    }
+    if req.target_type != "user" && req.target_type != "message" {
+        return Err(AppError::bad("未知的举报类型"));
+    }
+    let conn = state.db.lock().unwrap();
+    let target = report_target(&conn, &req.target_type, req.target_id)?
+        .ok_or_else(|| AppError::not_found("举报对象不存在"))?;
+    if req.target_type == "user" && target.uid == Some(a.uid) {
+        return Err(AppError::bad("不能举报自己"));
+    }
+    if let Some(cid) = target.conv_id {
+        let member: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM conversation_members WHERE conv_id=?1 AND uid=?2",
+            params![cid, a.uid],
+            |r| r.get(0),
+        )?;
+        if member == 0 {
+            return Err(AppError::forbidden("不在该会话中"));
+        }
+    }
+    let dup: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM reports WHERE reporter_uid=?1 AND target_type=?2 AND target_id=?3 AND status='pending'",
+        params![a.uid, req.target_type, req.target_id],
+        |r| r.get(0),
+    )?;
+    if dup > 0 {
+        return Err(AppError::conflict("已举报，请等待处理"));
+    }
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "INSERT INTO reports (reporter_uid,target_type,target_id,reason,status,created_at) VALUES (?1,?2,?3,?4,'pending',?5)",
+        params![a.uid, req.target_type, req.target_id, reason, now()],
+    )?;
+    let id = tx.last_insert_rowid();
+    let admins: Vec<i64> = {
+        let mut stmt = tx.prepare(
+            "SELECT uid FROM users WHERE status='active' AND (role='root' OR (role='class_admin' AND class_id=?1))",
+        )?;
+        let v = stmt
+            .query_map(params![target.class_id], |r| r.get::<_, i64>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        v
+    };
+    for uid in admins {
+        notify(&tx, uid, "report", "收到新的举报，请在管理后台处理")?;
+    }
+    audit(&tx, &state.hmac, Some(a.uid), "report.create", Some(&req.target_type), Some(&req.target_id.to_string()), None)?;
+    tx.commit()?;
+    Ok(Json(json!({"id":id})))
+}
+
+async fn admin_reports(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<Json<Vec<ReportDto>>> {
+    let a = auth(&state, &headers)?;
+    if !is_admin(&a) {
+        return Err(AppError::forbidden("需要管理员权限"));
+    }
+    let conn = state.db.lock().unwrap();
+    let base = {
+        let mut stmt = conn.prepare(
+            "SELECT id,reporter_uid,target_type,target_id,reason,status,created_at,handled_by,action,detail
+             FROM reports ORDER BY (status='pending') DESC, id DESC LIMIT 200",
+        )?;
+        let v = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, String>(5)?,
+                    r.get::<_, i64>(6)?,
+                    r.get::<_, Option<i64>>(7)?,
+                    r.get::<_, Option<String>>(8)?,
+                    r.get::<_, Option<String>>(9)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        v
+    };
+    let mut out = Vec::new();
+    for (id, reporter_uid, target_type, target_id, reason, status, created_at, handled_by, action, detail) in base {
+        let (reporter_name, reporter_class): (String, Option<i64>) = conn.query_row(
+            "SELECT display_name,class_id FROM users WHERE uid=?1",
+            params![reporter_uid],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        let target = report_target(&conn, &target_type, target_id)?;
+        let target_class = target.as_ref().and_then(|t| t.class_id);
+        if a.role != "root" && !(reporter_class == a.class_id || target_class == a.class_id) {
+            continue;
+        }
+        out.push(ReportDto {
+            id,
+            reporter_uid,
+            reporter_name,
+            target_type,
+            target_id,
+            target_uid: target.as_ref().and_then(|t| t.uid),
+            target_name: target.as_ref().and_then(|t| t.name.clone()),
+            message_id: target.as_ref().and_then(|t| t.message_id),
+            conv_id: target.as_ref().and_then(|t| t.conv_id),
+            reason,
+            status,
+            created_at,
+            handled_by,
+            action,
+            detail,
+        });
+    }
+    Ok(Json(out))
+}
+
+async fn resolve_report(State(state): State<AppState>, headers: HeaderMap, Path(id): Path<i64>, Json(req): Json<ResolveReportRequest>) -> ApiResult<Json<Value>> {
+    let a = auth(&state, &headers)?;
+    if !is_admin(&a) {
+        return Err(AppError::forbidden("需要管理员权限"));
+    }
+    let conn = state.db.lock().unwrap();
+    let (reporter_uid, target_type, target_id, status): (i64, String, i64, String) = conn
+        .query_row(
+            "SELECT reporter_uid,target_type,target_id,status FROM reports WHERE id=?1",
+            params![id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()?
+        .ok_or_else(|| AppError::not_found("举报不存在"))?;
+    if status != "pending" {
+        return Err(AppError::conflict("该举报已处理"));
+    }
+    let target = report_target(&conn, &target_type, target_id)?.ok_or_else(|| AppError::not_found("举报对象不存在"))?;
+    if !can_moderate(&a, target.class_id) {
+        return Err(AppError::forbidden("无权处理该举报"));
+    }
+    let tx = conn.unchecked_transaction()?;
+    let detail = match req.action.as_str() {
+        "dismiss" => "已忽略".to_string(),
+        "hide_message" => {
+            let mid = target.message_id.ok_or_else(|| AppError::bad("举报对象不是消息"))?;
+            tx.execute("UPDATE messages SET hidden=1 WHERE id=?1", params![mid])?;
+            "已隐藏消息".to_string()
+        }
+        "mute" => {
+            let uid = target.uid.ok_or_else(|| AppError::bad("找不到被举报用户"))?;
+            let mins = req.minutes.unwrap_or(60).clamp(1, 10080);
+            tx.execute("UPDATE users SET muted_until=?1 WHERE uid=?2", params![now() + mins * 60, uid])?;
+            notify(&tx, uid, "moderation", &format!("你已被禁言 {mins} 分钟"))?;
+            format!("已禁言 {mins} 分钟")
+        }
+        "ban" => {
+            let uid = target.uid.ok_or_else(|| AppError::bad("找不到被举报用户"))?;
+            if uid == a.uid {
+                return Err(AppError::bad("不能封禁自己"));
+            }
+            tx.execute("UPDATE users SET status='banned' WHERE uid=?1", params![uid])?;
+            tx.execute("UPDATE sessions SET revoked=1 WHERE uid=?1", params![uid])?;
+            notify(&tx, uid, "moderation", "你的账号已被封禁，请联系管理员")?;
+            "已封禁".to_string()
+        }
+        _ => return Err(AppError::bad("未知的处理方式")),
+    };
+    tx.execute(
+        "UPDATE reports SET status='resolved',handled_by=?1,handled_at=?2,action=?3,detail=?4 WHERE id=?5",
+        params![a.uid, now(), req.action, detail, id],
+    )?;
+    notify(&tx, reporter_uid, "report_result", &format!("你的举报已处理：{detail}"))?;
+    audit(&tx, &state.hmac, Some(a.uid), "report.resolve", Some("report"), Some(&id.to_string()), Some(&detail))?;
+    tx.commit()?;
+    Ok(Json(json!({"ok":true})))
+}
+
+async fn admin_user_action(State(state): State<AppState>, headers: HeaderMap, Path(uid): Path<i64>, Json(req): Json<UserActionRequest>) -> ApiResult<Json<Value>> {
+    let a = auth(&state, &headers)?;
+    if !is_admin(&a) {
+        return Err(AppError::forbidden("需要管理员权限"));
+    }
+    if uid == a.uid {
+        return Err(AppError::bad("不能对自己执行该操作"));
+    }
+    let conn = state.db.lock().unwrap();
+    let (role, class_id): (String, Option<i64>) = conn
+        .query_row("SELECT role,class_id FROM users WHERE uid=?1", params![uid], |r| Ok((r.get(0)?, r.get(1)?)))
+        .optional()?
+        .ok_or_else(|| AppError::not_found("用户不存在"))?;
+    if a.role != "root" && (role != "student" || class_id != a.class_id) {
+        return Err(AppError::forbidden("无权管理该用户"));
+    }
+    let tx = conn.unchecked_transaction()?;
+    let detail = match req.action.as_str() {
+        "mute" => {
+            let mins = req.minutes.unwrap_or(60).clamp(1, 10080);
+            tx.execute("UPDATE users SET muted_until=?1 WHERE uid=?2", params![now() + mins * 60, uid])?;
+            notify(&tx, uid, "moderation", &format!("你已被禁言 {mins} 分钟"))?;
+            format!("禁言 {mins} 分钟")
+        }
+        "unmute" => {
+            tx.execute("UPDATE users SET muted_until=0 WHERE uid=?1", params![uid])?;
+            "解除禁言".to_string()
+        }
+        "ban" => {
+            tx.execute("UPDATE users SET status='banned' WHERE uid=?1", params![uid])?;
+            tx.execute("UPDATE sessions SET revoked=1 WHERE uid=?1", params![uid])?;
+            notify(&tx, uid, "moderation", "你的账号已被封禁，请联系管理员")?;
+            "封禁".to_string()
+        }
+        "unban" => {
+            tx.execute("UPDATE users SET status='active' WHERE uid=?1", params![uid])?;
+            notify(&tx, uid, "moderation", "你的账号已解封")?;
+            "解封".to_string()
+        }
+        _ => return Err(AppError::bad("未知的操作")),
+    };
+    audit(&tx, &state.hmac, Some(a.uid), "admin.user.action", Some("uid"), Some(&uid.to_string()), Some(&detail))?;
+    tx.commit()?;
+    Ok(Json(json!({"ok":true})))
+}
+
 async fn create_request(State(state): State<AppState>, headers: HeaderMap, Json(req): Json<FriendRequestCreate>) -> ApiResult<Json<Value>> {
     let a = auth(&state, &headers)?;
     if req.to_uid == a.uid {
@@ -1306,6 +1744,8 @@ async fn create_request(State(state): State<AppState>, headers: HeaderMap, Json(
         params![a.uid, req.to_uid, req.message_enc, now()],
     )?;
     let id = conn.last_insert_rowid();
+    let from_name: String = conn.query_row("SELECT display_name FROM users WHERE uid=?1", params![a.uid], |r| r.get(0))?;
+    notify(&conn, req.to_uid, "friend_request", &format!("{from_name} 请求加你为好友"))?;
     audit(&conn, &state.hmac, Some(a.uid), "friend.request", Some("uid"), Some(&req.to_uid.to_string()), None)?;
     Ok(Json(json!({"id":id})))
 }
@@ -1378,6 +1818,8 @@ async fn accept_request(State(state): State<AppState>, headers: HeaderMap, Path(
     tx.execute("INSERT OR IGNORE INTO friends (uid,friend_uid,created_at) VALUES (?1,?2,?3)", params![from_uid, to_uid, now()])?;
     tx.execute("INSERT OR IGNORE INTO friends (uid,friend_uid,created_at) VALUES (?1,?2,?3)", params![to_uid, from_uid, now()])?;
     tx.execute("UPDATE friend_requests SET status='accepted',handled_at=?1 WHERE id=?2", params![now(), id])?;
+    let to_name: String = tx.query_row("SELECT display_name FROM users WHERE uid=?1", params![to_uid], |r| r.get(0))?;
+    notify(&tx, from_uid, "friend_accept", &format!("{to_name} 已同意你的好友申请"))?;
     audit(&tx, &state.hmac, Some(a.uid), "friend.accept", Some("uid"), Some(&from_uid.to_string()), None)?;
     tx.commit()?;
     Ok(Json(json!({"conv_id":conv_id})))
@@ -1511,6 +1953,10 @@ async fn send_message(State(state): State<AppState>, headers: HeaderMap, Path(co
     if member == 0 {
         return Err(AppError::forbidden("不在该会话中"));
     }
+    let muted_until: i64 = conn.query_row("SELECT muted_until FROM users WHERE uid=?1", params![a.uid], |r| r.get(0))?;
+    if muted_until > now() {
+        return Err(AppError::forbidden("你已被禁言，暂时不能发送消息"));
+    }
     let (kind, _current): (String, i64) = conn.query_row(
         "SELECT kind,current_key_version FROM conversations WHERE id=?1",
         params![conv_id],
@@ -1634,7 +2080,32 @@ async fn admin_stats(State(state): State<AppState>, headers: HeaderMap) -> ApiRe
         )
     };
     let db_bytes = std::fs::metadata(state.data.join("liaisonyy.db")).map(|m| m.len() as i64).unwrap_or(0);
-    Ok(Json(AdminStats { users, online, messages_today, messages_total, classes, pending_requests: pending, db_bytes }))
+    let cid = a.class_id.unwrap_or(0);
+    let (reports_pending, muted, banned): (i64, i64, i64) = if a.role == "root" {
+        (
+            conn.query_row("SELECT COUNT(*) FROM reports WHERE status='pending'", [], |r| r.get(0))?,
+            conn.query_row("SELECT COUNT(*) FROM users WHERE muted_until>?1", params![now()], |r| r.get(0))?,
+            conn.query_row("SELECT COUNT(*) FROM users WHERE status='banned'", [], |r| r.get(0))?,
+        )
+    } else {
+        (
+            conn.query_row("SELECT COUNT(*) FROM reports r JOIN users u ON u.uid=r.reporter_uid WHERE r.status='pending' AND u.class_id=?1", params![cid], |r| r.get(0))?,
+            conn.query_row("SELECT COUNT(*) FROM users WHERE muted_until>?1 AND class_id=?2", params![now(), cid], |r| r.get(0))?,
+            conn.query_row("SELECT COUNT(*) FROM users WHERE status='banned' AND class_id=?1", params![cid], |r| r.get(0))?,
+        )
+    };
+    Ok(Json(AdminStats {
+        users,
+        online,
+        messages_today,
+        messages_total,
+        classes,
+        pending_requests: pending,
+        db_bytes,
+        reports_pending,
+        muted,
+        banned,
+    }))
 }
 
 async fn admin_audit(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<Json<Vec<AuditEntry>>> {
@@ -1899,6 +2370,7 @@ CREATE TABLE IF NOT EXISTS users (
   login_policy TEXT NOT NULL DEFAULT 'pin_allowed',
   public_key TEXT NOT NULL,
   avatar_file_id INTEGER,
+  muted_until INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS credentials (
@@ -2000,8 +2472,24 @@ CREATE TABLE IF NOT EXISTS audit_log (
   action TEXT NOT NULL, target_type TEXT, target_id TEXT, ip TEXT, detail TEXT,
   prev_hash TEXT NOT NULL, hash TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS notifications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, uid INTEGER NOT NULL, kind TEXT NOT NULL,
+  text TEXT NOT NULL, created_at INTEGER NOT NULL, read INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS announcements (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, scope TEXT NOT NULL, class_id INTEGER,
+  title TEXT NOT NULL, body TEXT NOT NULL, created_by INTEGER NOT NULL, created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS reports (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, reporter_uid INTEGER NOT NULL,
+  target_type TEXT NOT NULL, target_id INTEGER NOT NULL, reason TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending', created_at INTEGER NOT NULL,
+  handled_by INTEGER, handled_at INTEGER, action TEXT, detail TEXT
+);
 CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conv_id,id);
 CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts);
+CREATE INDEX IF NOT EXISTS idx_notifications_uid ON notifications(uid,id);
+CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status,id);
 "#;
 
 fn init_db(conn: &Connection) -> rusqlite::Result<()> {
@@ -2016,6 +2504,9 @@ fn init_db(conn: &Connection) -> rusqlite::Result<()> {
     };
     if !cols.iter().any(|c| c == "avatar_file_id") {
         conn.execute("ALTER TABLE users ADD COLUMN avatar_file_id INTEGER", [])?;
+    }
+    if !cols.iter().any(|c| c == "muted_until") {
+        conn.execute("ALTER TABLE users ADD COLUMN muted_until INTEGER NOT NULL DEFAULT 0", [])?;
     }
     Ok(())
 }
@@ -2214,6 +2705,15 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/friends/:uid", delete(delete_friend))
         .route("/api/v1/blocks", get(list_blocks).post(block_user))
         .route("/api/v1/blocks/:uid", delete(unblock_user))
+        .route("/api/v1/notifications", get(list_notifications))
+        .route("/api/v1/notifications/read", post(mark_notifications_read))
+        .route("/api/v1/announcements", get(list_announcements))
+        .route("/api/v1/reports", post(create_report))
+        .route("/api/v1/admin/announcements", post(create_announcement))
+        .route("/api/v1/admin/announcements/:id", delete(delete_announcement))
+        .route("/api/v1/admin/reports", get(admin_reports))
+        .route("/api/v1/admin/reports/:id/resolve", post(resolve_report))
+        .route("/api/v1/admin/users/:uid/action", post(admin_user_action))
         .route("/api/v1/friends/requests", get(list_requests).post(create_request))
         .route("/api/v1/friends/requests/:id/accept", post(accept_request))
         .route("/api/v1/friends/requests/:id/decline", post(decline_request))

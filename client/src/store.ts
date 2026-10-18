@@ -4,6 +4,7 @@ import { setFileData } from "./files";
 import type {
   AccountPublic,
   AdminStats,
+  AnnouncementDto,
   AuditEntry,
   BootstrapResponse,
   ClassInfo,
@@ -14,7 +15,9 @@ import type {
   LoginResponse,
   MessageView,
   MyProfileResponse,
+  NotificationDto,
   PublicProfile,
+  ReportDto,
   RosterEntry,
 } from "./types";
 
@@ -31,7 +34,9 @@ export type Page =
   | "Reset"
   | "Profile"
   | "Security"
-  | "UserProfile";
+  | "UserProfile"
+  | "Notifications"
+  | "Announcements";
 export type Tab = "messages" | "contacts" | "me";
 
 export const state = reactive({
@@ -100,6 +105,15 @@ export const state = reactive({
   secPin2: "",
   secPolicyPassword: "",
   secPolicy: "pin_allowed" as "pin_allowed" | "password_only",
+  notifications: [] as NotificationDto[],
+  announcements: [] as AnnouncementDto[],
+  adminReports: [] as ReportDto[],
+  reportMessageId: null as number | null,
+  reportReason: "",
+  annTitle: "",
+  annBody: "",
+  annScope: "class" as "global" | "class",
+  annClassId: null as number | null,
   toast: "",
   error: "",
 });
@@ -176,6 +190,13 @@ export function clearSensitiveForms(): void {
   state.myProfile = null;
   state.userProfile = null;
   state.blocks = [];
+  state.reportMessageId = null;
+  state.reportReason = "";
+  state.annTitle = "";
+  state.annBody = "";
+  state.notifications = [];
+  state.announcements = [];
+  state.adminReports = [];
 }
 
 export function newId(): string {
@@ -231,6 +252,8 @@ export function handleEv(ev: Ev): void {
       send({ type: "Friends" });
       send({ type: "GetMyProfile" });
       send({ type: "ListBlocks" });
+      send({ type: "Notifications" });
+      send({ type: "Announcements" });
       if (ev.data.offline) showToast("已进入离线模式，消息会先存在本机");
       break;
     }
@@ -373,6 +396,23 @@ export function handleEv(ev: Ev): void {
       state.secPolicyPassword = "";
       state.secPin = "";
       state.secPin2 = "";
+      break;
+    case "Notifications":
+      state.notifications = ev.data;
+      break;
+    case "Announcements":
+      state.announcements = ev.data;
+      break;
+    case "Reports":
+      state.adminReports = ev.data;
+      break;
+    case "ReportCreated":
+      state.reportMessageId = null;
+      state.reportReason = "";
+      break;
+    case "AnnouncementCreated":
+      state.annTitle = "";
+      state.annBody = "";
       break;
     case "Toast":
       showToast(ev.data);
