@@ -981,6 +981,42 @@ async fn set_profile_key(State(state): State<AppState>, headers: HeaderMap, Json
     Ok(Json(json!({"ok":true})))
 }
 
+async fn rekey_class(State(state): State<AppState>, headers: HeaderMap, Json(req): Json<RekeyClassRequest>) -> ApiResult<Json<Value>> {
+    let a = auth(&state, &headers)?;
+    if req.user_priv_class.is_empty()
+        || req.user_priv_class.len() > 4096
+        || req.profile_class.is_empty()
+        || req.profile_class.len() > 4096
+    {
+        return Err(AppError::bad("班级密钥格式不正确"));
+    }
+    let conn = state.db.lock().unwrap();
+    let class_id: Option<i64> = conn
+        .query_row("SELECT class_id FROM users WHERE uid=?1", params![a.uid], |r| r.get(0))
+        .optional()?
+        .flatten();
+    let cid = class_id.ok_or_else(|| AppError::bad("你还没有班级"))?;
+    let has_pk: Option<String> = conn
+        .query_row("SELECT escrow_public_key FROM classes WHERE id=?1", params![cid], |r| r.get(0))
+        .optional()?
+        .flatten();
+    if has_pk.is_none() {
+        return Err(AppError::bad("班级密钥未初始化"));
+    }
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "UPDATE user_keys SET user_priv_class=?1 WHERE uid=?2",
+        params![req.user_priv_class, a.uid],
+    )?;
+    tx.execute(
+        "UPDATE profiles_enc SET profile_class=?1 WHERE uid=?2",
+        params![req.profile_class, a.uid],
+    )?;
+    audit(&tx, &state.hmac, Some(a.uid), "account.class_rekey", Some("class"), Some(&cid.to_string()), None)?;
+    tx.commit()?;
+    Ok(Json(json!({"ok":true})))
+}
+
 async fn get_user_profile(State(state): State<AppState>, headers: HeaderMap, Path(uid): Path<i64>) -> ApiResult<Json<PublicProfile>> {
     let a = auth(&state, &headers)?;
     let conn = state.db.lock().unwrap();
@@ -2340,14 +2376,20 @@ async fn admin_stats(State(state): State<AppState>, headers: HeaderMap) -> ApiRe
     }))
 }
 
-async fn admin_audit(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<Json<Vec<AuditEntry>>> {
+async fn admin_audit(State(state): State<AppState>, headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> ApiResult<Json<Vec<AuditEntry>>> {
     let a = auth(&state, &headers)?;
     if a.role != "root" {
         return Err(AppError::forbidden("需要总管理员权限"));
     }
+    let after: i64 = q.get("after").and_then(|s| s.parse().ok()).unwrap_or(0);
+    let action = q.get("action").map(|s| s.trim().to_string()).unwrap_or_default();
+    let limit: i64 = q.get("limit").and_then(|s| s.parse().ok()).unwrap_or(200).clamp(1, 1000);
     let conn = state.db.lock().unwrap();
-    let mut stmt = conn.prepare("SELECT id,ts,actor_uid,action,target_type,target_id,detail FROM audit_log ORDER BY id DESC LIMIT 200")?;
-    let rows = stmt.query_map([], |r| {
+    let mut stmt = conn.prepare(
+        "SELECT id,ts,actor_uid,action,target_type,target_id,detail FROM audit_log
+         WHERE id>?1 AND (?2='' OR action LIKE ?2 || '%') ORDER BY id DESC LIMIT ?3",
+    )?;
+    let rows = stmt.query_map(params![after, action, limit], |r| {
         Ok(AuditEntry { id: r.get(0)?, ts: r.get(1)?, actor_uid: r.get(2)?, action: r.get(3)?, target_type: r.get(4)?, target_id: r.get(5)?, detail: r.get(6)? })
     })?;
     let mut out = Vec::new();
@@ -2355,6 +2397,437 @@ async fn admin_audit(State(state): State<AppState>, headers: HeaderMap) -> ApiRe
         out.push(row?);
     }
     Ok(Json(out))
+}
+
+async fn admin_audit_verify(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<Json<AuditVerify>> {
+    let a = auth(&state, &headers)?;
+    if a.role != "root" {
+        return Err(AppError::forbidden("需要总管理员权限"));
+    }
+    let conn = state.db.lock().unwrap();
+    let mut stmt = conn.prepare(
+        "SELECT id,prev_hash,hash,ts,actor_uid,action,target_type,target_id,detail FROM audit_log ORDER BY id",
+    )?;
+    let mut rows = stmt.query([])?;
+    let mut prev = String::new();
+    let mut checked = 0i64;
+    let mut first_bad = None;
+    while let Some(r) = rows.next()? {
+        let id: i64 = r.get(0)?;
+        let row_prev: String = r.get(1)?;
+        let row_hash: String = r.get(2)?;
+        let ts: i64 = r.get(3)?;
+        let actor: Option<i64> = r.get(4)?;
+        let action: String = r.get(5)?;
+        let tt: Option<String> = r.get(6)?;
+        let tid: Option<String> = r.get(7)?;
+        let detail: Option<String> = r.get(8)?;
+        let payload = format!(
+            "{}|{}|{}|{}|{}|{}|{}",
+            prev,
+            ts,
+            actor.unwrap_or(0),
+            action,
+            tt.unwrap_or_default(),
+            tid.unwrap_or_default(),
+            detail.unwrap_or_default()
+        );
+        let expect = hmac_sha256_b64(&state.hmac, payload.as_bytes());
+        if row_prev != prev || row_hash != expect {
+            first_bad = Some(id);
+            break;
+        }
+        prev = row_hash;
+        checked += 1;
+    }
+    Ok(Json(AuditVerify { ok: first_bad.is_none(), checked, first_bad }))
+}
+
+fn csv_field(s: &str) -> String {
+    if s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r') {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
+
+async fn admin_audit_csv(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<Response> {
+    let a = auth(&state, &headers)?;
+    if a.role != "root" {
+        return Err(AppError::forbidden("需要总管理员权限"));
+    }
+    let conn = state.db.lock().unwrap();
+    let mut stmt = conn.prepare(
+        "SELECT id,ts,actor_uid,action,target_type,target_id,detail,prev_hash,hash FROM audit_log ORDER BY id",
+    )?;
+    let mut rows = stmt.query([])?;
+    let mut out = String::from("id,ts,actor_uid,action,target_type,target_id,detail,prev_hash,hash\n");
+    while let Some(r) = rows.next()? {
+        let id: i64 = r.get(0)?;
+        let ts: i64 = r.get(1)?;
+        let actor: Option<i64> = r.get(2)?;
+        let action: String = r.get(3)?;
+        let tt: Option<String> = r.get(4)?;
+        let tid: Option<String> = r.get(5)?;
+        let detail: Option<String> = r.get(6)?;
+        let prev: String = r.get(7)?;
+        let hash: String = r.get(8)?;
+        out.push_str(&format!(
+            "{},{},{},{},{},{},{},{},{}\n",
+            id,
+            ts,
+            actor.map(|v| v.to_string()).unwrap_or_default(),
+            csv_field(&action),
+            csv_field(tt.as_deref().unwrap_or("")),
+            csv_field(tid.as_deref().unwrap_or("")),
+            csv_field(detail.as_deref().unwrap_or("")),
+            csv_field(&prev),
+            csv_field(&hash)
+        ));
+    }
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/csv; charset=utf-8")
+        .header(header::CONTENT_DISPOSITION, "attachment; filename=\"liaisonyy-audit.csv\"")
+        .body(Body::from(out))
+        .map_err(|e| AppError::internal(e.to_string()))
+}
+
+fn dir_size(path: &FsPath) -> i64 {
+    let mut total = 0i64;
+    if let Ok(rd) = std::fs::read_dir(path) {
+        for e in rd.flatten() {
+            if let Ok(md) = e.metadata() {
+                if md.is_dir() {
+                    total += dir_size(&e.path());
+                } else {
+                    total += md.len() as i64;
+                }
+            }
+        }
+    }
+    total
+}
+
+fn copy_dir_all(src: &FsPath, dst: &FsPath) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for e in std::fs::read_dir(src)? {
+        let e = e?;
+        let to = dst.join(e.file_name());
+        if e.file_type()?.is_dir() {
+            copy_dir_all(&e.path(), &to)?;
+        } else {
+            std::fs::copy(e.path(), to)?;
+        }
+    }
+    Ok(())
+}
+
+async fn admin_dashboard(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<Json<AdminDashboard>> {
+    let a = auth(&state, &headers)?;
+    if !is_admin(&a) {
+        return Err(AppError::forbidden("需要管理员权限"));
+    }
+    let conn = state.db.lock().unwrap();
+    let cid = a.class_id.unwrap_or(0);
+    let (users, messages_today, messages_total): (i64, i64, i64) = if a.role == "root" {
+        (
+            conn.query_row("SELECT COUNT(*) FROM users WHERE role!='root'", [], |r| r.get(0))?,
+            conn.query_row("SELECT COUNT(*) FROM messages WHERE created_at>?1", params![now() - 86400], |r| r.get(0))?,
+            conn.query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0))?,
+        )
+    } else {
+        (
+            conn.query_row("SELECT COUNT(*) FROM users WHERE class_id=?1", params![cid], |r| r.get(0))?,
+            conn.query_row(
+                "SELECT COUNT(*) FROM messages m JOIN users u ON u.uid=m.sender_uid WHERE u.class_id=?1 AND m.created_at>?2",
+                params![cid, now() - 86400],
+                |r| r.get(0),
+            )?,
+            conn.query_row(
+                "SELECT COUNT(*) FROM messages m JOIN users u ON u.uid=m.sender_uid WHERE u.class_id=?1",
+                params![cid],
+                |r| r.get(0),
+            )?,
+        )
+    };
+    let sessions: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sessions WHERE revoked=0 AND expires_at>?1",
+        params![now()],
+        |r| r.get(0),
+    )?;
+    let online: i64 = conn.query_row(
+        "SELECT COUNT(DISTINCT uid) FROM sessions WHERE revoked=0 AND expires_at>?1",
+        params![now()],
+        |r| r.get(0),
+    )?;
+    let auth_fail_today: i64 = if a.role == "root" {
+        conn.query_row(
+            "SELECT COUNT(*) FROM audit_log WHERE action='auth.login.fail' AND ts>?1",
+            params![now() - 86400],
+            |r| r.get(0),
+        )?
+    } else {
+        conn.query_row(
+            "SELECT COUNT(*) FROM audit_log a JOIN users u ON u.uid=a.actor_uid WHERE a.action='auth.login.fail' AND a.ts>?1 AND u.class_id=?2",
+            params![now() - 86400, cid],
+            |r| r.get(0),
+        )?
+    };
+    let class_rows: Vec<(i64, String)> = {
+        let mut stmt = if a.role == "root" {
+            conn.prepare("SELECT id,name FROM classes WHERE archived=0 ORDER BY id")?
+        } else {
+            conn.prepare("SELECT id,name FROM classes WHERE archived=0 AND id=?1")?
+        };
+        let v = if a.role == "root" {
+            stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        } else {
+            stmt.query_map(params![cid], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        v
+    };
+    let mut classes = Vec::new();
+    for (id, name) in class_rows {
+        classes.push(ClassStat {
+            class_id: id,
+            name,
+            users: conn.query_row("SELECT COUNT(*) FROM users WHERE class_id=?1 AND role!='root'", params![id], |r| r.get(0))?,
+            messages_today: conn.query_row(
+                "SELECT COUNT(*) FROM messages m JOIN users u ON u.uid=m.sender_uid WHERE u.class_id=?1 AND m.created_at>?2",
+                params![id, now() - 86400],
+                |r| r.get(0),
+            )?,
+            messages_total: conn.query_row(
+                "SELECT COUNT(*) FROM messages m JOIN users u ON u.uid=m.sender_uid WHERE u.class_id=?1",
+                params![id],
+                |r| r.get(0),
+            )?,
+        });
+    }
+    let (reports_pending, muted, banned): (i64, i64, i64) = if a.role == "root" {
+        (
+            conn.query_row("SELECT COUNT(*) FROM reports WHERE status='pending'", [], |r| r.get(0))?,
+            conn.query_row("SELECT COUNT(*) FROM users WHERE muted_until>?1", params![now()], |r| r.get(0))?,
+            conn.query_row("SELECT COUNT(*) FROM users WHERE status='banned'", [], |r| r.get(0))?,
+        )
+    } else {
+        (
+            conn.query_row(
+                "SELECT COUNT(*) FROM reports r JOIN users u ON u.uid=r.reporter_uid WHERE r.status='pending' AND u.class_id=?1",
+                params![cid],
+                |r| r.get(0),
+            )?,
+            conn.query_row("SELECT COUNT(*) FROM users WHERE muted_until>?1 AND class_id=?2", params![now(), cid], |r| r.get(0))?,
+            conn.query_row("SELECT COUNT(*) FROM users WHERE status='banned' AND class_id=?1", params![cid], |r| r.get(0))?,
+        )
+    };
+    let db_bytes = std::fs::metadata(state.data.join("liaisonyy.db")).map(|m| m.len() as i64).unwrap_or(0);
+    Ok(Json(AdminDashboard {
+        users,
+        online,
+        sessions,
+        auth_fail_today,
+        messages_today,
+        messages_total,
+        classes,
+        db_bytes,
+        media_bytes: dir_size(&state.data.join("media")),
+        reports_pending,
+        muted,
+        banned,
+    }))
+}
+
+async fn create_backup(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<Json<BackupResult>> {
+    let a = auth(&state, &headers)?;
+    if a.role != "root" {
+        return Err(AppError::forbidden("需要总管理员权限"));
+    }
+    let name = format!("backup-{}", now());
+    let dir = state.data.join("backups").join(&name);
+    std::fs::create_dir_all(&dir)?;
+    {
+        let conn = state.db.lock().unwrap();
+        conn.execute("VACUUM INTO ?1", params![dir.join("liaisonyy.db").to_string_lossy().to_string()])?;
+        for f in ["keyring.bin", "media.key", "identity.txt"] {
+            let src = state.data.join(f);
+            if src.exists() {
+                std::fs::copy(&src, dir.join(f))?;
+            }
+        }
+        let media = state.data.join("media");
+        if media.exists() {
+            copy_dir_all(&media, &dir.join("media"))?;
+        }
+        audit(&conn, &state.hmac, Some(a.uid), "admin.backup.create", Some("backup"), Some(&name), None)?;
+    }
+    Ok(Json(BackupResult {
+        name: name.clone(),
+        path: dir.to_string_lossy().to_string(),
+        bytes: dir_size(&dir),
+    }))
+}
+
+async fn list_backups(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<Json<Vec<BackupInfo>>> {
+    let a = auth(&state, &headers)?;
+    if a.role != "root" {
+        return Err(AppError::forbidden("需要总管理员权限"));
+    }
+    let mut out = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(state.data.join("backups")) {
+        for e in rd.flatten() {
+            if !e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            let name = e.file_name().to_string_lossy().to_string();
+            let created_at = name
+                .strip_prefix("backup-")
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(0);
+            out.push(BackupInfo { name, created_at, bytes: dir_size(&e.path()) });
+        }
+    }
+    out.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    Ok(Json(out))
+}
+
+async fn request_restore(State(state): State<AppState>, headers: HeaderMap, Path(name): Path<String>) -> ApiResult<Json<Value>> {
+    let a = auth(&state, &headers)?;
+    if a.role != "root" {
+        return Err(AppError::forbidden("需要总管理员权限"));
+    }
+    if name.is_empty() || name.len() > 64 || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return Err(AppError::bad("备份名称不正确"));
+    }
+    let dir = state.data.join("backups").join(&name);
+    if !dir.join("liaisonyy.db").exists() {
+        return Err(AppError::not_found("备份不存在"));
+    }
+    std::fs::write(state.data.join("restore_request.txt"), &name)?;
+    let conn = state.db.lock().unwrap();
+    audit(&conn, &state.hmac, Some(a.uid), "admin.backup.restore_request", Some("backup"), Some(&name), None)?;
+    Ok(Json(json!({"ok":true,"message":"将在服务端下次启动时恢复"})))
+}
+
+async fn admin_user_conversations(State(state): State<AppState>, headers: HeaderMap, Path(uid): Path<i64>) -> ApiResult<Json<Vec<ConversationInfo>>> {
+    let a = auth(&state, &headers)?;
+    if !is_admin(&a) {
+        return Err(AppError::forbidden("需要管理员权限"));
+    }
+    let conn = state.db.lock().unwrap();
+    let target_class: Option<i64> = conn
+        .query_row("SELECT class_id FROM users WHERE uid=?1", params![uid], |r| r.get(0))
+        .optional()?
+        .ok_or_else(|| AppError::not_found("用户不存在"))?;
+    if a.role == "class_admin" && target_class != a.class_id {
+        return Err(AppError::forbidden("只能查看本班学生"));
+    }
+    let mut stmt = conn.prepare(
+        "SELECT c.id,c.kind,c.class_id,c.current_key_version FROM conversations c
+         JOIN conversation_members cm ON cm.conv_id=c.id WHERE cm.uid=?1 ORDER BY c.id",
+    )?;
+    let rows = stmt.query_map(params![uid], |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<i64>>(2)?, r.get::<_, i64>(3)?))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (conv_id, kind, class_id, key_version) = row?;
+        let title: String = if kind == "class_group" {
+            conn.query_row("SELECT name FROM classes WHERE id=?1", params![class_id.unwrap_or(0)], |r| r.get(0))
+                .unwrap_or_else(|_| "班级群".into())
+        } else {
+            conn.query_row(
+                "SELECT u.display_name FROM conversation_members cm JOIN users u ON u.uid=cm.uid WHERE cm.conv_id=?1 AND cm.uid!=?2 LIMIT 1",
+                params![conv_id, uid],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|_| "私聊".into())
+        };
+        let last_at: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(created_at),0) FROM messages WHERE conv_id=?1",
+            params![conv_id],
+            |r| r.get(0),
+        )?;
+        out.push(ConversationInfo {
+            id: conv_id,
+            kind,
+            title,
+            class_id,
+            key_version,
+            member_wrap: String::new(),
+            unread: 0,
+            last_at,
+            last_preview: String::new(),
+        });
+    }
+    out.sort_by(|x, y| y.last_at.cmp(&x.last_at));
+    Ok(Json(out))
+}
+
+async fn admin_conversation_messages(State(state): State<AppState>, headers: HeaderMap, Path(conv_id): Path<i64>) -> ApiResult<Json<Vec<MessageDto>>> {
+    let a = auth(&state, &headers)?;
+    if !is_admin(&a) {
+        return Err(AppError::forbidden("需要管理员权限"));
+    }
+    let conn = state.db.lock().unwrap();
+    if a.role == "class_admin" {
+        let cid = a.class_id.unwrap_or(0);
+        let allowed: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM conversation_members cm JOIN users u ON u.uid=cm.uid WHERE cm.conv_id=?1 AND u.class_id=?2",
+            params![conv_id, cid],
+            |r| r.get(0),
+        )?;
+        let group_class: Option<i64> = conn
+            .query_row("SELECT class_id FROM conversations WHERE id=?1 AND kind='class_group'", params![conv_id], |r| r.get(0))
+            .optional()?
+            .flatten();
+        if allowed == 0 && group_class != Some(cid) {
+            return Err(AppError::forbidden("无权查看该会话"));
+        }
+    }
+    let mut stmt = conn.prepare(
+        "SELECT m.id,m.conv_id,m.sender_uid,u.display_name,m.key_version,m.client_msg_id,m.ciphertext,m.created_at
+         FROM messages m JOIN users u ON u.uid=m.sender_uid WHERE m.conv_id=?1 ORDER BY m.id DESC LIMIT 500",
+    )?;
+    let mut v = stmt.query_map(params![conv_id], msg_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+    v.reverse();
+    Ok(Json(v))
+}
+
+async fn admin_student_conv_keys(State(state): State<AppState>, headers: HeaderMap, Path((uid, conv_id)): Path<(i64, i64)>) -> ApiResult<Json<Vec<Value>>> {
+    let a = auth(&state, &headers)?;
+    if !is_admin(&a) {
+        return Err(AppError::forbidden("需要管理员权限"));
+    }
+    let conn = state.db.lock().unwrap();
+    let target_class: Option<i64> = conn
+        .query_row("SELECT class_id FROM users WHERE uid=?1", params![uid], |r| r.get(0))
+        .optional()?
+        .ok_or_else(|| AppError::not_found("用户不存在"))?;
+    if a.role == "class_admin" && target_class != a.class_id {
+        return Err(AppError::forbidden("只能查看本班学生"));
+    }
+    let member: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM conversation_members WHERE conv_id=?1 AND uid=?2",
+        params![conv_id, uid],
+        |r| r.get(0),
+    )?;
+    if member == 0 {
+        return Err(AppError::forbidden("该用户不在会话中"));
+    }
+    let mut stmt = conn.prepare(
+        "SELECT key_version,wrapped_key FROM conversation_keys WHERE conv_id=?1 AND recipient_uid=?2 ORDER BY key_version",
+    )?;
+    let rows = stmt
+        .query_map(params![conv_id, uid], |r| {
+            Ok(json!({"key_version": r.get::<_, i64>(0)?, "wrapped_key": r.get::<_, String>(1)?}))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    audit(&conn, &state.hmac, Some(a.uid), "admin.decrypt.keys", Some("uid"), Some(&uid.to_string()), Some(&conv_id.to_string()))?;
+    Ok(Json(rows))
 }
 
 async fn admin_classes(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<Json<Vec<ClassInfo>>> {
@@ -2750,8 +3223,49 @@ fn init_db(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-fn load_or_create_media_key(data: &FsPath) -> anyhow::Result<[u8; 32]> {
-    use rand::RngCore;
+fn apply_pending_restore(data: &FsPath) -> anyhow::Result<()> {
+    let marker = data.join("restore_request.txt");
+    if !marker.exists() {
+        return Ok(());
+    }
+    let name = std::fs::read_to_string(&marker)?.trim().to_string();
+    let valid = !name.is_empty()
+        && name.len() <= 64
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+    let src = data.join("backups").join(&name);
+    if !valid || !src.join("liaisonyy.db").exists() {
+        eprintln!("WARN: invalid restore request, ignored");
+        let _ = std::fs::remove_file(&marker);
+        return Ok(());
+    }
+    let safety = data.join(format!("pre-restore-{}", now()));
+    std::fs::create_dir_all(&safety)?;
+    for f in ["liaisonyy.db", "liaisonyy.db-wal", "liaisonyy.db-shm"] {
+        let p = data.join(f);
+        if p.exists() {
+            std::fs::rename(&p, safety.join(f))?;
+        }
+    }
+    for f in ["keyring.bin", "media.key"] {
+        let s = src.join(f);
+        if s.exists() {
+            std::fs::copy(&s, data.join(f))?;
+        }
+    }
+    let media = data.join("media");
+    if media.exists() {
+        std::fs::rename(&media, safety.join("media"))?;
+    }
+    if src.join("media").exists() {
+        copy_dir_all(&src.join("media"), &media)?;
+    }
+    std::fs::copy(src.join("liaisonyy.db"), data.join("liaisonyy.db"))?;
+    std::fs::remove_file(&marker)?;
+    eprintln!("restored backup {name}; previous data saved in {}", safety.display());
+    Ok(())
+}
+
+fn load_or_create_media_key(data: &FsPath) -> anyhow::Result<[u8; 32]> {    use rand::RngCore;
     let p = data.join("media.key");
     if p.exists() {
         let bytes = std::fs::read(&p)?;
@@ -2898,6 +3412,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     std::fs::create_dir_all(&data)?;
+    apply_pending_restore(&data)?;
     let conn = Connection::open(data.join("liaisonyy.db"))?;
     init_db(&conn)?;
     if sync_network_time().is_none() {
@@ -2933,6 +3448,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/me", get(me).patch(update_me))
         .route("/api/v1/me/profile", get(get_my_profile).patch(update_profile))
         .route("/api/v1/me/profile-key", post(set_profile_key))
+        .route("/api/v1/me/rekey-class", post(rekey_class))
         .route("/api/v1/me/avatar", post(upload_avatar))
         .route("/api/v1/me/password", post(change_password))
         .route("/api/v1/me/pin", post(set_pin))
@@ -2965,7 +3481,15 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/conversations/:id/keys", get(conversation_keys))
         .route("/api/v1/conversations/:id/read", post(mark_read))
         .route("/api/v1/admin/stats", get(admin_stats))
+        .route("/api/v1/admin/dashboard", get(admin_dashboard))
         .route("/api/v1/admin/audit", get(admin_audit))
+        .route("/api/v1/admin/audit/verify", get(admin_audit_verify))
+        .route("/api/v1/admin/audit.csv", get(admin_audit_csv))
+        .route("/api/v1/admin/backups", get(list_backups).post(create_backup))
+        .route("/api/v1/admin/backups/:name/restore", post(request_restore))
+        .route("/api/v1/admin/users/:uid/conversations", get(admin_user_conversations))
+        .route("/api/v1/admin/conversations/:id/messages", get(admin_conversation_messages))
+        .route("/api/v1/admin/students/:uid/conversations/:conv_id/keys", get(admin_student_conv_keys))
         .route("/api/v1/admin/classes", get(admin_classes).post(create_class))
         .route("/api/v1/admin/classes/:id/roster", post(import_roster))
         .route("/api/v1/admin/classes/:id/admin", post(assign_class_admin))

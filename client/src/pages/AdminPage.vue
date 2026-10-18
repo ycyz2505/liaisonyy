@@ -10,13 +10,52 @@ function refresh() {
   send({ type: "AdminStats" });
   send({ type: "AdminReports" });
   send({ type: "AdminTransfers" });
+  send({ type: "AdminDashboard" });
   if (isRoot.value) {
-    send({ type: "AdminAudit" });
+    send({ type: "AdminAuditQuery", data: { after: 0, action: state.auditFilter.trim() } });
     send({ type: "AdminClasses" });
+    send({ type: "ListBackups" });
   }
 }
 
 onMounted(refresh);
+
+function queryAudit() {
+  send({ type: "AdminAuditQuery", data: { after: 0, action: state.auditFilter.trim() } });
+}
+
+function verifyAudit() {
+  send({ type: "VerifyAudit" });
+}
+
+function exportAudit() {
+  send({ type: "ExportAuditCsv" });
+}
+
+function createBackup() {
+  send({ type: "CreateBackup" });
+}
+
+function loadBackups() {
+  send({ type: "ListBackups" });
+}
+
+function restore(name: string) {
+  if (!window.confirm(`确定在服务端下次启动时恢复备份 ${name} 吗？当前数据会先移到 pre-restore 目录。`)) return;
+  send({ type: "RequestRestore", data: { name } });
+}
+
+function loadUserConvs() {
+  const uid = Number(state.decryptUid.trim());
+  if (!uid) return;
+  send({ type: "AdminUserConversations", data: { uid } });
+}
+
+function decryptConv(convId: number) {
+  const uid = Number(state.decryptUid.trim());
+  if (!uid) return;
+  send({ type: "AdminDecryptConversation", data: { uid, conv_id: convId } });
+}
 
 function transferAct(id: number, action: string) {
   send({ type: "TransferAction", data: { id, action } });
@@ -107,6 +146,27 @@ function back() {
       <div class="stat"><b>{{ state.adminStats.reports_pending }}</b><span>待处理举报</span></div>
       <div class="stat"><b>{{ state.adminStats.muted }}</b><span>禁言中</span></div>
       <div class="stat"><b>{{ state.adminStats.banned }}</b><span>封禁</span></div>
+    </div>
+
+    <div v-if="state.adminDashboard" class="card">
+      <div class="stats-grid">
+        <div class="stat"><b>{{ state.adminDashboard.sessions }}</b><span>有效会话</span></div>
+        <div class="stat"><b>{{ state.adminDashboard.auth_fail_today }}</b><span>24h 登录失败</span></div>
+        <div class="stat">
+          <b>{{ (state.adminDashboard.media_bytes / 1024).toFixed(0) }}</b><span>媒体 KB</span>
+        </div>
+        <div class="stat"><b>{{ state.adminDashboard.online }}</b><span>在线账号</span></div>
+      </div>
+      <h3>班级概览</h3>
+      <div
+        v-for="c in state.adminDashboard.classes"
+        :key="c.class_id"
+        class="small"
+        style="padding: 2px 0"
+      >
+        {{ c.name }} · {{ c.users }} 人 · 今日 {{ c.messages_today }} 条 · 累计
+        {{ c.messages_total }} 条
+      </div>
     </div>
 
     <div class="sep"></div>
@@ -223,16 +283,91 @@ function back() {
     <button style="margin-top: 8px" @click="createResetKey">生成</button>
     <p v-if="state.resetCode" class="err">重置密钥：{{ state.resetCode }}（只显示一次）</p>
 
-    <template v-if="isRoot && state.adminAudit.length > 0">
+    <template v-if="isRoot">
       <div class="sep"></div>
-      <h3>最近审计</h3>
-      <div class="card" style="max-height: 220px; overflow-y: auto">
+      <h3>审计日志</h3>
+      <div class="row">
+        <input
+          v-model="state.auditFilter"
+          placeholder="按动作前缀筛选，如 auth."
+          @keyup.enter="queryAudit"
+        />
+        <button class="fixed" @click="queryAudit">查询</button>
+      </div>
+      <div class="row" style="margin-top: 8px; flex-wrap: wrap">
+        <button class="fixed" @click="verifyAudit">校验哈希链</button>
+        <button class="fixed" @click="exportAudit">导出 CSV</button>
+      </div>
+      <div v-if="state.auditVerify" style="margin-top: 6px">
+        <span v-if="state.auditVerify.ok" class="small muted">
+          哈希链完整，已校验 {{ state.auditVerify.checked }} 条
+        </span>
+        <span v-else class="err">第 {{ state.auditVerify.first_bad }} 条开始不一致</span>
+      </div>
+      <div class="card" style="max-height: 240px; overflow-y: auto; margin-top: 8px">
         <div v-for="a in state.adminAudit" :key="a.id" class="small" style="padding: 3px 0">
-          {{ formatTime(a.ts) }} · {{ a.action }}
+          #{{ a.id }} · {{ formatTime(a.ts) }} · {{ a.action }}
           <span class="muted">{{ a.detail || "" }}</span>
         </div>
+        <div v-if="state.adminAudit.length === 0" class="empty">没有记录</div>
+      </div>
+
+      <div class="sep"></div>
+      <div class="row" style="align-items: baseline">
+        <h3 style="flex: 1; margin: 0">备份</h3>
+        <button class="link fixed" @click="loadBackups">刷新</button>
+      </div>
+      <button style="margin-top: 6px" @click="createBackup">立即备份</button>
+      <div v-for="b in state.backups" :key="b.name" class="friend-row">
+        <div class="grow">
+          <div class="account-name">{{ b.name }}</div>
+          <div class="account-sub">
+            {{ formatTime(b.created_at) }} · {{ (b.bytes / 1024 / 1024).toFixed(2) }} MB
+          </div>
+        </div>
+        <button class="fixed" @click="restore(b.name)">恢复</button>
+      </div>
+      <div class="hint">
+        恢复会在服务端下次启动时执行；当前数据先移到 pre-restore-* 目录。
       </div>
     </template>
+
+    <div class="sep"></div>
+    <h3>聊天解密（内部工具）</h3>
+    <div class="hint">按设计稿的托管机制恢复/核查；每次查看都会写入审计日志。</div>
+    <div class="row">
+      <input v-model="state.decryptUid" placeholder="学生 UID" @keyup.enter="loadUserConvs" />
+      <button class="fixed" @click="loadUserConvs">加载会话</button>
+    </div>
+    <div
+      v-for="c in state.adminConvs"
+      :key="c.id"
+      class="friend-row clickable"
+      @click="decryptConv(c.id)"
+    >
+      <div class="grow">
+        <div class="account-name">{{ c.title }}</div>
+        <div class="account-sub">
+          {{ c.kind === "class_group" ? "班级群" : "私聊" }} · #{{ c.id }}
+        </div>
+      </div>
+    </div>
+    <div
+      v-if="state.adminDecrypted"
+      class="card"
+      style="max-height: 280px; overflow-y: auto; margin-top: 8px"
+    >
+      <div
+        v-for="m in state.adminDecrypted.messages"
+        :key="m.id"
+        class="small"
+        style="padding: 3px 0"
+      >
+        <b>{{ m.sender_name }}</b>：{{ m.text }}
+        <span class="muted">{{ formatTime(m.created_at) }}</span>
+      </div>
+      <div v-if="state.adminDecrypted.messages.length === 0" class="empty">没有消息</div>
+    </div>
 
     <template v-if="isRoot && state.adminClasses.length > 0">
       <div class="sep"></div>

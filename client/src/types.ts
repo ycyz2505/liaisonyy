@@ -233,6 +233,55 @@ export interface MeResponse {
   avatar_file_id: number | null;
 }
 
+export interface ClassStat {
+  class_id: number;
+  name: string;
+  users: number;
+  messages_today: number;
+  messages_total: number;
+}
+
+export interface AdminDashboard {
+  users: number;
+  online: number;
+  sessions: number;
+  auth_fail_today: number;
+  messages_today: number;
+  messages_total: number;
+  classes: ClassStat[];
+  db_bytes: number;
+  media_bytes: number;
+  reports_pending: number;
+  muted: number;
+  banned: number;
+}
+
+export interface AuditVerify {
+  ok: boolean;
+  checked: number;
+  first_bad: number | null;
+}
+
+export interface BackupInfo {
+  name: string;
+  created_at: number;
+  bytes: number;
+}
+
+export interface AdminMessageDto {
+  id: number;
+  sender_uid: number;
+  sender_name: string;
+  text: string;
+  key_version: number;
+  created_at: number;
+}
+
+export interface AdminDecrypted {
+  conv_id: number;
+  messages: AdminMessageDto[];
+}
+
 export interface AuditEntry {
   id: number;
   ts: number;
@@ -327,7 +376,16 @@ export type Cmd =
   | { type: "CreateTransfer"; data: { to_class_id: number; reason: string } }
   | { type: "MyTransfers" }
   | { type: "AdminTransfers" }
-  | { type: "TransferAction"; data: { id: number; action: string } };
+  | { type: "TransferAction"; data: { id: number; action: string } }
+  | { type: "AdminDashboard" }
+  | { type: "AdminAuditQuery"; data: { after: number; action: string } }
+  | { type: "VerifyAudit" }
+  | { type: "ExportAuditCsv" }
+  | { type: "CreateBackup" }
+  | { type: "ListBackups" }
+  | { type: "RequestRestore"; data: { name: string } }
+  | { type: "AdminUserConversations"; data: { uid: number } }
+  | { type: "AdminDecryptConversation"; data: { uid: number; conv_id: number } };
 
 export type Ev =
   | { type: "Bootstrap"; data: BootstrapResponse }
@@ -366,6 +424,13 @@ export type Ev =
   | { type: "Transfers"; data: TransferDto[] }
   | { type: "AdminTransfers"; data: TransferDto[] }
   | { type: "MeUpdated"; data: MeResponse }
+  | { type: "AdminDashboard"; data: AdminDashboard }
+  | { type: "AuditVerify"; data: AuditVerify }
+  | { type: "Backups"; data: BackupInfo[] }
+  | { type: "BackupCreated"; data: { name: string; path: string; bytes: number } }
+  | { type: "CsvSaved"; data: { path: string } }
+  | { type: "AdminConversations"; data: ConversationInfo[] }
+  | { type: "AdminDecrypted"; data: AdminDecrypted }
   | { type: "Toast"; data: string }
   | { type: "Error"; data: string }
   | { type: "Offline"; data: boolean };

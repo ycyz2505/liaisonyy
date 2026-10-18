@@ -3,9 +3,13 @@ import { send, serverNowMs } from "./api";
 import { setFileData } from "./files";
 import type {
   AccountPublic,
+  AdminDashboard,
+  AdminDecrypted,
   AdminStats,
   AnnouncementDto,
   AuditEntry,
+  AuditVerify,
+  BackupInfo,
   BootstrapResponse,
   ClassInfo,
   ConversationInfo,
@@ -119,6 +123,13 @@ export const state = reactive({
   adminTransfers: [] as TransferDto[],
   transferToClassId: null as number | null,
   transferReason: "",
+  adminDashboard: null as AdminDashboard | null,
+  auditVerify: null as AuditVerify | null,
+  auditFilter: "",
+  backups: [] as BackupInfo[],
+  adminConvs: [] as ConversationInfo[],
+  adminDecrypted: null as AdminDecrypted | null,
+  decryptUid: "",
   toast: "",
   error: "",
 });
@@ -206,6 +217,13 @@ export function clearSensitiveForms(): void {
   state.adminTransfers = [];
   state.transferToClassId = null;
   state.transferReason = "";
+  state.adminDashboard = null;
+  state.auditVerify = null;
+  state.auditFilter = "";
+  state.backups = [];
+  state.adminConvs = [];
+  state.adminDecrypted = null;
+  state.decryptUid = "";
 }
 
 export function newId(): string {
@@ -448,6 +466,30 @@ export function handleEv(ev: Ev): void {
       }
       break;
     }
+    case "AdminDashboard":
+      state.adminDashboard = ev.data;
+      break;
+    case "AuditVerify":
+      state.auditVerify = ev.data;
+      showToast(
+        ev.data.ok
+          ? `审计链完整（已校验 ${ev.data.checked} 条）`
+          : `审计链在第 ${ev.data.first_bad} 条断裂`,
+      );
+      break;
+    case "Backups":
+      state.backups = ev.data;
+      break;
+    case "BackupCreated":
+      break;
+    case "CsvSaved":
+      break;
+    case "AdminConversations":
+      state.adminConvs = ev.data;
+      break;
+    case "AdminDecrypted":
+      state.adminDecrypted = ev.data;
+      break;
     case "Toast":
       showToast(ev.data);
       break;

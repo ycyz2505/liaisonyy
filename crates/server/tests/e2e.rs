@@ -705,6 +705,117 @@ fn e2e_core_flow() {
     .unwrap();
     assert_eq!(String::from_utf8(cg2_pt).unwrap(), "welcome transfer");
 
+    // student client re-seals keys for the new class escrow after transfer
+    post(
+        &a,
+        &format!("{base}/api/v1/me/rekey-class"),
+        Some(&ra2_token),
+        json!({
+            "user_priv_class": seal(&pk_c2, &ra.sk).unwrap(),
+            "profile_class": seal(&pk_c2, &ra.pdk).unwrap(),
+        }),
+    );
+
+    // root escrow can recover the student's private key and decrypt messages
+    let info = get(&a, &format!("{base}/api/v1/admin/students/{}/keys", ra.uid), Some(&root_token));
+    assert_eq!(info["mode"], "root");
+    let student_sk = open_sealed(&sk_r, info["user_priv"].as_str().unwrap()).unwrap();
+    assert_eq!(student_sk, ra.sk.to_vec());
+    let admin_convs = get(&a, &format!("{base}/api/v1/admin/users/{}/conversations", ra.uid), Some(&root_token));
+    assert!(admin_convs
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|c| c["id"].as_i64() == Some(conv_id)));
+    let admin_wraps = get(
+        &a,
+        &format!("{base}/api/v1/admin/students/{}/conversations/{conv_id}/keys", ra.uid),
+        Some(&root_token),
+    );
+    let w1 = admin_wraps
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|k| k["key_version"].as_i64() == Some(1))
+        .unwrap()["wrapped_key"]
+        .as_str()
+        .unwrap();
+    let dek_admin = open_sealed(&b64e(&student_sk), w1).unwrap();
+    let mut dek_admin_arr = [0u8; 32];
+    dek_admin_arr.copy_from_slice(&dek_admin);
+    let admin_msgs = get(
+        &a,
+        &format!("{base}/api/v1/admin/conversations/{conv_id}/messages"),
+        Some(&root_token),
+    );
+    let hello = admin_msgs
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["sender_uid"].as_i64() == Some(ra.uid) && m["key_version"].as_i64() == Some(1))
+        .unwrap();
+    let hello_pt = aead_decrypt(
+        &dek_admin_arr,
+        &b64d(hello["ciphertext"].as_str().unwrap()).unwrap(),
+        conv_id.to_string().as_bytes(),
+    )
+    .unwrap();
+    assert_eq!(String::from_utf8(hello_pt).unwrap(), "hello");
+
+    // new class admin can recover the transferred student after rekey
+    let info2 = get(&a, &format!("{base}/api/v1/admin/students/{}/keys", ra.uid), Some(&rc.token));
+    let escrow2_sk = open_sealed(&b64e(&rc.sk), info2["class_wrap"].as_str().unwrap()).unwrap();
+    let student_sk2 = open_sealed(&b64e(&escrow2_sk), info2["user_priv"].as_str().unwrap()).unwrap();
+    assert_eq!(student_sk2, ra.sk.to_vec());
+
+    // dashboard, audit filter/verify/csv, backups
+    let (code, _) = call_status(
+        &a,
+        "POST",
+        &format!("{base}/api/v1/auth/login"),
+        None,
+        Some(json!({"uid_or_handle":"lisi","kind":"password","input":"Wrong1234"})),
+    );
+    assert_eq!(code, 401);
+    let dash = get(&a, &format!("{base}/api/v1/admin/dashboard"), Some(&root_token));
+    assert!(dash["classes"].as_array().unwrap().len() >= 2);
+    assert!(dash["auth_fail_today"].as_i64().unwrap() >= 1);
+    let verify = get(&a, &format!("{base}/api/v1/admin/audit/verify"), Some(&root_token));
+    assert_eq!(verify["ok"], true);
+    let filtered = get(&a, &format!("{base}/api/v1/admin/audit?action=auth."), Some(&root_token));
+    assert!(filtered
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|x| x["action"].as_str().unwrap_or("").starts_with("auth.")));
+    let csv_resp = a
+        .get(&format!("{base}/api/v1/admin/audit.csv"))
+        .set("Authorization", &format!("Bearer {root_token}"))
+        .call()
+        .unwrap();
+    let mut csv_buf = Vec::new();
+    std::io::Read::read_to_end(&mut csv_resp.into_reader(), &mut csv_buf).unwrap();
+    assert!(String::from_utf8_lossy(&csv_buf).starts_with("id,ts,actor_uid,action"));
+
+    let backup = post(&a, &format!("{base}/api/v1/admin/backups"), Some(&root_token), json!({}));
+    let backup_name = backup["name"].as_str().unwrap().to_string();
+    let backup_path = backup["path"].as_str().unwrap().to_string();
+    assert!(std::path::Path::new(&backup_path).join("liaisonyy.db").exists());
+    assert!(std::path::Path::new(&backup_path).join("media.key").exists());
+    let backups = get(&a, &format!("{base}/api/v1/admin/backups"), Some(&root_token));
+    assert!(backups
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|b| b["name"].as_str() == Some(backup_name.as_str())));
+    post(
+        &a,
+        &format!("{base}/api/v1/admin/backups/{backup_name}/restore"),
+        Some(&root_token),
+        json!({}),
+    );
+    assert!(dir.join("restore_request.txt").exists());
+
     // stats
     let stats = get(&a, &format!("{base}/api/v1/admin/stats"), Some(&root_token));
     assert!(stats["users"].as_i64().unwrap() >= 2);

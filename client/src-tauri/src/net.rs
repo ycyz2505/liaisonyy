@@ -108,6 +108,15 @@ pub enum Cmd {
     MyTransfers,
     AdminTransfers,
     TransferAction { id: i64, action: String },
+    AdminDashboard,
+    AdminAuditQuery { after: i64, action: String },
+    VerifyAudit,
+    ExportAuditCsv,
+    CreateBackup,
+    ListBackups,
+    RequestRestore { name: String },
+    AdminUserConversations { uid: i64 },
+    AdminDecryptConversation { uid: i64, conv_id: i64 },
 }
 
 #[derive(Serialize, Clone)]
@@ -149,6 +158,13 @@ pub enum Ev {
     Transfers(Vec<TransferDto>),
     AdminTransfers(Vec<TransferDto>),
     MeUpdated(MeResponse),
+    AdminDashboard(AdminDashboard),
+    AuditVerify(AuditVerify),
+    Backups(Vec<BackupInfo>),
+    BackupCreated { name: String, path: String, bytes: i64 },
+    CsvSaved { path: String },
+    AdminConversations(Vec<ConversationInfo>),
+    AdminDecrypted(AdminDecrypted),
     Toast(String),
     Error(String),
     Offline(bool),
@@ -709,7 +725,168 @@ impl Worker {
                     Err(e) => self.err(e),
                 }
             }
+            Cmd::AdminDashboard => match self.do_get::<AdminDashboard>("/api/v1/admin/dashboard") {
+                Ok(v) => self.send(Ev::AdminDashboard(v)),
+                Err(e) => self.err(e),
+            },
+            Cmd::AdminAuditQuery { after, action } => {
+                let path = format!("/api/v1/admin/audit?after={after}&action={}", urlencode(&action));
+                match self.do_get::<Vec<AuditEntry>>(&path) {
+                    Ok(v) => self.send(Ev::AdminAudit(v)),
+                    Err(e) => self.err(e),
+                }
+            }
+            Cmd::VerifyAudit => match self.do_get::<AuditVerify>("/api/v1/admin/audit/verify") {
+                Ok(v) => self.send(Ev::AuditVerify(v)),
+                Err(e) => self.err(e),
+            },
+            Cmd::ExportAuditCsv => {
+                let r = self.fetch_raw("/api/v1/admin/audit.csv").and_then(|b| {
+                    self.save_export(&format!("liaisonyy-audit-{}.csv", now()), &b)
+                });
+                match r {
+                    Ok(path) => {
+                        self.toast(format!("已导出：{path}"));
+                        self.send(Ev::CsvSaved { path });
+                    }
+                    Err(e) => self.err(e),
+                }
+            }
+            Cmd::CreateBackup => {
+                let r = self.token().and_then(|t| self.call("POST", "/api/v1/admin/backups", Some(&t), Some(json!({}))));
+                match r {
+                    Ok(v) => {
+                        let name = v.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                        let path = v.get("path").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                        let bytes = v.get("bytes").and_then(|x| x.as_i64()).unwrap_or(0);
+                        self.toast(format!("备份已创建：{name}"));
+                        self.send(Ev::BackupCreated { name, path, bytes });
+                        if let Ok(v) = self.do_get::<Vec<BackupInfo>>("/api/v1/admin/backups") {
+                            self.send(Ev::Backups(v));
+                        }
+                    }
+                    Err(e) => self.err(e),
+                }
+            }
+            Cmd::ListBackups => match self.do_get::<Vec<BackupInfo>>("/api/v1/admin/backups") {
+                Ok(v) => self.send(Ev::Backups(v)),
+                Err(e) => self.err(e),
+            },
+            Cmd::RequestRestore { name } => {
+                let r = self.token().and_then(|t| {
+                    self.call("POST", &format!("/api/v1/admin/backups/{name}/restore"), Some(&t), Some(json!({})))
+                });
+                match r {
+                    Ok(v) => {
+                        let msg = v.get("message").and_then(|x| x.as_str()).unwrap_or("已安排恢复").to_string();
+                        self.toast(msg);
+                    }
+                    Err(e) => self.err(e),
+                }
+            }
+            Cmd::AdminUserConversations { uid } => {
+                match self.do_get::<Vec<ConversationInfo>>(&format!("/api/v1/admin/users/{uid}/conversations")) {
+                    Ok(v) => self.send(Ev::AdminConversations(v)),
+                    Err(e) => self.err(e),
+                }
+            }
+            Cmd::AdminDecryptConversation { uid, conv_id } => {
+                if let Err(e) = self.do_admin_decrypt(uid, conv_id) {
+                    self.err(e);
+                }
+            }
         }
+    }
+
+    fn fetch_raw(&self, path: &str) -> Result<Vec<u8>, String> {
+        let t = self.token()?;
+        let url = format!("{}{}", self.base.trim_end_matches('/'), path);
+        let resp = self
+            .agent
+            .get(&url)
+            .set("Authorization", &format!("Bearer {t}"))
+            .call()
+            .map_err(|e| format!("网络错误: {e}"))?;
+        let mut buf = Vec::new();
+        resp.into_reader()
+            .read_to_end(&mut buf)
+            .map_err(|e| e.to_string())?;
+        Ok(buf)
+    }
+
+    fn save_export(&self, filename: &str, bytes: &[u8]) -> Result<String, String> {
+        let home = std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .map_err(|_| "找不到用户目录".to_string())?;
+        let mut dir = std::path::PathBuf::from(home);
+        dir.push("Documents");
+        if !dir.exists() {
+            dir.pop();
+        }
+        let path = dir.join(filename);
+        std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+        Ok(path.to_string_lossy().to_string())
+    }
+
+    fn do_admin_decrypt(&mut self, uid: i64, conv_id: i64) -> Result<(), String> {
+        let t = self.token()?;
+        let own_sk = self.sk_b64()?;
+        let info = self.call("GET", &format!("/api/v1/admin/students/{uid}/keys"), Some(&t), None)?;
+        let mode = info.get("mode").and_then(|x| x.as_str()).unwrap_or("");
+        let class_wrap = info.get("class_wrap").and_then(|x| x.as_str()).unwrap_or("");
+        let user_priv = info.get("user_priv").and_then(|x| x.as_str()).unwrap_or("");
+        let target_sk = if mode == "root" {
+            open_sealed(&own_sk, user_priv).map_err(|_| "无法解开学生私钥".to_string())?
+        } else {
+            let escrow_sk = open_sealed(&own_sk, class_wrap).map_err(|_| "无法解开班级托管密钥".to_string())?;
+            open_sealed(&b64e(&escrow_sk), user_priv).map_err(|_| "无法解开学生私钥".to_string())?
+        };
+        let target_sk_b64 = b64e(&target_sk);
+        let wraps = self.call(
+            "GET",
+            &format!("/api/v1/admin/students/{uid}/conversations/{conv_id}/keys"),
+            Some(&t),
+            None,
+        )?;
+        let mut deks: HashMap<i64, [u8; 32]> = HashMap::new();
+        for item in wraps.as_array().cloned().unwrap_or_default() {
+            let ver = item.get("key_version").and_then(|x| x.as_i64()).unwrap_or(0);
+            let w = item.get("wrapped_key").and_then(|x| x.as_str()).unwrap_or("");
+            if let Ok(raw) = open_sealed(&target_sk_b64, w) {
+                if raw.len() == 32 {
+                    let mut k = [0u8; 32];
+                    k.copy_from_slice(&raw);
+                    deks.insert(ver, k);
+                }
+            }
+        }
+        let v = self.call("GET", &format!("/api/v1/admin/conversations/{conv_id}/messages"), Some(&t), None)?;
+        let dtos: Vec<MessageDto> = serde_json::from_value(v).map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for d in dtos {
+            let text = deks
+                .get(&d.key_version)
+                .and_then(|k| {
+                    b64d(&d.ciphertext)
+                        .ok()
+                        .and_then(|c| aead_decrypt(k, &c, conv_id.to_string().as_bytes()).ok())
+                })
+                .map(|v| String::from_utf8_lossy(&v).to_string())
+                .unwrap_or_else(|| "[无法解密]".into());
+            out.push(AdminMessageDto {
+                id: d.id,
+                sender_uid: d.sender_uid,
+                sender_name: d.sender_name,
+                text,
+                key_version: d.key_version,
+                created_at: d.created_at,
+            });
+        }
+        for k in deks.values_mut() {
+            k.fill(0);
+        }
+        self.send(Ev::AdminDecrypted(AdminDecrypted { conv_id, messages: out }));
+        Ok(())
     }
 
     fn do_update_profile(
@@ -1486,10 +1663,52 @@ impl Worker {
         self.poll_count = self.poll_count.wrapping_add(1);
         if self.poll_count % 10 == 0 {
             if let Ok(m) = self.do_get::<MeResponse>("/api/v1/me") {
+                let changed = self
+                    .session
+                    .as_ref()
+                    .map(|s| s.class_id != m.class_id)
+                    .unwrap_or(false);
+                if changed {
+                    self.rekey_class(&m);
+                }
                 self.send(Ev::MeUpdated(m));
             }
         }
         self.replay_outbox();
+        self.save_cache();
+    }
+
+    fn rekey_class(&mut self, m: &MeResponse) {
+        let Some(cid) = m.class_id else {
+            return;
+        };
+        let (sk_u, pdk, token) = match self.session.as_ref() {
+            Some(s) => (s.sk_u, s.pdk, s.token.clone()),
+            None => return,
+        };
+        if let Ok(b) = self.do_bootstrap() {
+            if let Some(pk) = b
+                .classes
+                .iter()
+                .find(|c| c.id == cid)
+                .and_then(|c| c.escrow_public_key.clone())
+            {
+                if let (Ok(up), Ok(pp)) = (seal(&pk, &sk_u), seal(&pk, &pdk)) {
+                    let _ = self.call(
+                        "POST",
+                        "/api/v1/me/rekey-class",
+                        Some(&token),
+                        Some(json!({"user_priv_class": up, "profile_class": pp})),
+                    );
+                }
+            }
+        }
+        if let Some(s) = self.session.as_mut() {
+            s.class_id = m.class_id;
+        }
+        if let Some(c) = self.cache.login.as_mut() {
+            c.class_id = m.class_id;
+        }
         self.save_cache();
     }
 

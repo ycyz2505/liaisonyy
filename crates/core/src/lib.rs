@@ -578,6 +578,68 @@ pub struct TransferActionRequest {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct AuditVerify {
+    pub ok: bool,
+    pub checked: i64,
+    pub first_bad: Option<i64>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ClassStat {
+    pub class_id: i64,
+    pub name: String,
+    pub users: i64,
+    pub messages_today: i64,
+    pub messages_total: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct AdminDashboard {
+    pub users: i64,
+    pub online: i64,
+    pub sessions: i64,
+    pub auth_fail_today: i64,
+    pub messages_today: i64,
+    pub messages_total: i64,
+    pub classes: Vec<ClassStat>,
+    pub db_bytes: i64,
+    pub media_bytes: i64,
+    pub reports_pending: i64,
+    pub muted: i64,
+    pub banned: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct BackupInfo {
+    pub name: String,
+    pub created_at: i64,
+    pub bytes: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct BackupResult {
+    pub name: String,
+    pub path: String,
+    pub bytes: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct AdminMessageDto {
+    pub id: i64,
+    pub sender_uid: i64,
+    pub sender_name: String,
+    pub text: String,
+    pub key_version: i64,
+    pub created_at: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct AdminDecrypted {
+    pub conv_id: i64,
+    pub messages: Vec<AdminMessageDto>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AuditEntry {
     pub id: i64,
     pub ts: i64,
@@ -676,6 +738,12 @@ pub struct UpdateProfileRequest {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SetProfileKeyRequest {
     pub profile_own: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct RekeyClassRequest {
+    pub user_priv_class: String,
+    pub profile_class: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
