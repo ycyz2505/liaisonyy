@@ -1,0 +1,103 @@
+﻿cargo : warning: variants `Login`, `RegPassword`, `RegPin`, `Chat`, `Setup`, and `Reset` are never constructed
+At C:\Users\noilinux\Desktop\ycyz2505.github.io\liaisonyy\build.ps1:2 char:1
++ cargo @args
++ ~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (warning: varian...ver constructed:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  --> crates\client\src\main.rs:35:5
+   |
+33 | enum KbTarget {
+   |      -------- variants in this enum
+34 |     None,
+35 |     Login,
+   |     ^^^^^
+36 |     RegPassword,
+   |     ^^^^^^^^^^^
+37 |     RegPin,
+   |     ^^^^^^
+38 |     Chat,
+   |     ^^^^
+39 |     Setup,
+   |     ^^^^^
+40 |     Reset,
+   |     ^^^^^
+   |
+   = note: `KbTarget` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code anal
+ysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `keyboard`, `kb_target`, and `tray` are never read
+   --> crates\client\src\main.rs:96:5
+    |
+ 43 | struct App {
+    |        --- fields in this struct
+...
+ 96 |     keyboard: bool,
+    |     ^^^^^^^^
+ 97 |     kb_target: KbTarget,
+    |     ^^^^^^^^^
+...
+100 |     tray: Option<tray_icon::TrayIcon>,
+    |     ^^^^
+
+warning: fields `sender_uid` and `created_at` are never read
+  --> crates\client\src\net.rs:12:9
+   |
+10 | pub struct MessageView {
+   |            ----------- fields in this struct
+11 |     pub id: i64,
+12 |     pub sender_uid: i64,
+   |         ^^^^^^^^^^
+...
+15 |     pub created_at: i64,
+   |         ^^^^^^^^^^
+   |
+   = note: `MessageView` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored duri
+ng dead code analysis
+
+warning: fields `to_uid`, `from_public_key`, and `created_at` are never read
+  --> crates\client\src\net.rs:26:9
+   |
+22 | pub struct FriendRequestView {
+   |            ----------------- fields in this struct
+...
+26 |     pub to_uid: i64,
+   |         ^^^^^^
+27 |     pub to_name: String,
+28 |     pub from_public_key: String,
+   |         ^^^^^^^^^^^^^^^
+...
+31 |     pub created_at: i64,
+   |         ^^^^^^^^^^
+   |
+   = note: `FriendRequestView` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignore
+d during dead code analysis
+
+warning: variants `RefreshConversations` and `UpdateMe` are never constructed
+  --> crates\client\src\net.rs:53:5
+   |
+35 | pub enum Cmd {
+   |          --- variants in this enum
+...
+53 |     RefreshConversations,
+   |     ^^^^^^^^^^^^^^^^^^^^
+...
+70 |     UpdateMe { display_name: String },
+   |     ^^^^^^^^
+
+warning: fields `role`, `class_id`, and `login_policy` are never read
+   --> crates\client\src\net.rs:98:5
+    |
+ 95 | struct Session {
+    |        ------- fields in this struct
+...
+ 98 |     role: String,
+    |     ^^^^
+ 99 |     class_id: Option<i64>,
+    |     ^^^^^^^^
+100 |     login_policy: String,
+    |     ^^^^^^^^^^^^
+
+warning: `liaisonyy-client` (bin "liaisonyy-client") generated 6 warnings
+    Finished `release` profile [optimized] target(s) in 0.59s

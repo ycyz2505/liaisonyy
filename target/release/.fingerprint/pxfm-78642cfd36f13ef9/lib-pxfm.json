@@ -1,0 +1,1 @@
+{"rustc":4713182338527526517,"features":"[]","declared_features":"[]","target":3969741579377267933,"profile":2529095476764936286,"path":14173694549861680658,"deps":[],"local":[{"CheckDepInfo":{"dep_info":"release\\.fingerprint\\pxfm-78642cfd36f13ef9\\dep-lib-pxfm","checksum":false}}],"rustflags":["-C","target-feature=+crt-static"],"config":13554472818367145752,"compile_kind":0}

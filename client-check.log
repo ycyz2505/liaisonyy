@@ -1,0 +1,17 @@
+﻿cargo :     Checking liaisonyy-core v0.1.0 (C:\Users\noilinux\Desktop\ycyz2505.github.io\liaisonyy\crates\core)
+At C:\Users\noilinux\Desktop\ycyz2505.github.io\liaisonyy\build.ps1:2 char:1
++ cargo @args
++ ~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (    Checking li...yy\crates\core):String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+    Checking liaisonyy-client v0.1.0 (C:\Users\noilinux\Desktop\ycyz2505.github.io\liaisonyy\crates\client)
+crates\client\src\main.rs:35:5: warning: variants `Login`, `RegPassword`, `RegPin`, `Chat`, `Setup`, and `Reset` are ne
+ver constructed
+crates\client\src\main.rs:96:5: warning: fields `keyboard`, `kb_target`, and `tray` are never read
+crates\client\src\net.rs:12:9: warning: fields `sender_uid` and `created_at` are never read
+crates\client\src\net.rs:26:9: warning: fields `to_uid`, `from_public_key`, and `created_at` are never read
+crates\client\src\net.rs:53:5: warning: variants `RefreshConversations` and `UpdateMe` are never constructed
+crates\client\src\net.rs:98:5: warning: fields `role`, `class_id`, and `login_policy` are never read
+warning: `liaisonyy-client` (bin "liaisonyy-client") generated 6 warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.79s

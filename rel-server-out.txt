@@ -1,0 +1,4 @@
+liaisonyy server data: C:\Users\noilinux\AppData\Local\Temp\liaisonyy-rel-smoke
+SETUP TOKEN: 22068030
+API:   https://127.0.0.1:48200/api/v1/health
+Admin: https://127.0.0.1:48200/admin

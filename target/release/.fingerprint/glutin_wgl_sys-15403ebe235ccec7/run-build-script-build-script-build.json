@@ -1,0 +1,1 @@
+{"rustc":4713182338527526517,"features":"","declared_features":"","target":0,"profile":0,"path":0,"deps":[[7478509218540386589,"build_script_build",false,17842170952394841750]],"local":[{"RerunIfChanged":{"output":"release\\build\\glutin_wgl_sys-15403ebe235ccec7\\output","paths":["build.rs"]}}],"rustflags":["-C","target-feature=+crt-static"],"config":0,"compile_kind":0}
