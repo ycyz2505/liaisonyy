@@ -46,11 +46,19 @@ fn get_settings() -> store::Settings {
 
 fn show_window(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
-        if let Ok(Some(monitor)) = w.current_monitor() {
-            let size = w.outer_size().unwrap_or(tauri::PhysicalSize::new(380, 680));
+        if let Some(monitor) = w
+            .current_monitor()
+            .ok()
+            .flatten()
+            .or_else(|| w.primary_monitor().ok().flatten())
+        {
+            let scale = monitor.scale_factor();
+            let mut size = w.outer_size().unwrap_or(tauri::PhysicalSize::new(0, 0));
+            if size.width == 0 || size.height == 0 {
+                size = tauri::PhysicalSize::new((380.0 * scale) as u32, (680.0 * scale) as u32);
+            }
             let mpos = monitor.position();
             let msize = monitor.size();
-            let scale = monitor.scale_factor();
             let margin = (16.0 * scale) as i32;
             let taskbar = (48.0 * scale) as i32;
             let x = mpos.x + msize.width as i32 - size.width as i32 - margin;
