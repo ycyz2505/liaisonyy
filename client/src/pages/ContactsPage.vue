@@ -4,6 +4,7 @@ import { send } from "../api";
 import { showError, state } from "../store";
 import type { AccountPublic, FriendRequestView } from "../types";
 import Avatar from "../components/Avatar.vue";
+import ChineseInput from "../components/ChineseInput.vue";
 
 const myUid = computed(() => state.user?.uid ?? 0);
 const pending = computed(() => state.requests.filter((r) => r.status === "pending"));
@@ -78,7 +79,7 @@ function openProfile(uid: number) {
     <div class="sep"></div>
     <h3 style="margin-top: 0">本班同学</h3>
     <label>附言</label>
-    <input v-model="state.friendMsg" placeholder="加好友时附一句话" />
+    <ChineseInput v-model="state.friendMsg" placeholder="加好友时附一句话" />
     <div
       v-for="a in state.accounts.filter((x) => x.uid !== myUid)"
       :key="a.uid"

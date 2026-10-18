@@ -4,6 +4,8 @@ import { send } from "../api";
 import { fileUrl } from "../files";
 import { showError, state } from "../store";
 import Avatar from "../components/Avatar.vue";
+import ChineseInput from "../components/ChineseInput.vue";
+import ChineseTextarea from "../components/ChineseTextarea.vue";
 
 const p = computed(() => state.myProfile);
 const bg = computed(() => fileUrl(p.value?.background_file_id));
@@ -120,13 +122,22 @@ function unblock(uid: number) {
 
     <h3>编辑资料</h3>
     <label>用户名（所有同学可见）</label>
-    <input v-model="state.profileDisplayName" maxlength="20" />
+    <ChineseInput v-model="state.profileDisplayName" :maxlength="20" />
 
     <label>个性签名（所有人可见）</label>
-    <input v-model="state.profileSignature" maxlength="100" placeholder="一句话介绍自己" />
+    <ChineseInput
+      v-model="state.profileSignature"
+      :maxlength="100"
+      placeholder="一句话介绍自己"
+    />
 
     <label>个人简介（所有人可见）</label>
-    <textarea v-model="state.profileBio" maxlength="1000" placeholder="兴趣爱好、想说的话……"></textarea>
+    <ChineseTextarea
+      v-model="state.profileBio"
+      :maxlength="1000"
+      placeholder="兴趣爱好、想说的话……"
+      :rows="3"
+    />
 
     <div class="sep"></div>
     <h3>隐私信息</h3>
@@ -135,25 +146,30 @@ function unblock(uid: number) {
     </div>
 
     <label>性别</label>
-    <input v-model="state.profileGender" maxlength="16" placeholder="男 / 女 / 不填" />
+    <ChineseInput v-model="state.profileGender" :maxlength="16" placeholder="男 / 女 / 不填" />
     <label class="check-row">
       <input v-model="state.profileShowGender" type="checkbox" />
       <span>在资料页展示性别</span>
     </label>
 
     <label>生日</label>
-    <input v-model="state.profileBirthday" maxlength="32" placeholder="例如 2008-06-01" />
+    <ChineseInput
+      v-model="state.profileBirthday"
+      :maxlength="32"
+      placeholder="例如 2008-06-01"
+    />
     <label class="check-row">
       <input v-model="state.profileShowBirthday" type="checkbox" />
       <span>在资料页展示生日</span>
     </label>
 
     <label>社交账号</label>
-    <textarea
+    <ChineseTextarea
       v-model="state.profileSocials"
-      maxlength="2000"
+      :maxlength="2000"
       placeholder="QQ、微信等，例如：QQ 123456"
-    ></textarea>
+      :rows="2"
+    />
     <label class="check-row">
       <input v-model="state.profileShowSocials" type="checkbox" />
       <span>在资料页展示社交账号</span>

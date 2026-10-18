@@ -2,6 +2,8 @@
 import { onBeforeUnmount, onMounted } from "vue";
 import { getSettings, onEv, send, syncServerTime } from "./api";
 import { handleEv, state } from "./store";
+import { ime } from "./ime/imeStore";
+import FloatingKeyboard from "./components/FloatingKeyboard.vue";
 import TopBar from "./components/TopBar.vue";
 import WelcomePage from "./pages/WelcomePage.vue";
 import SetupPage from "./pages/SetupPage.vue";
@@ -80,6 +82,7 @@ function applyUpdate() {
       <NotificationsPage v-else-if="state.page === 'Notifications'" />
       <AnnouncementsPage v-else-if="state.page === 'Announcements'" />
     </main>
+    <FloatingKeyboard v-if="ime.open" />
     <div v-if="state.toast" class="toast">{{ state.toast }}</div>
     <div v-if="state.error" class="error-bar">
       <span>{{ state.error }}</span>

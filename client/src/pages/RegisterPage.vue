@@ -3,6 +3,7 @@ import { computed, onMounted } from "vue";
 import { send } from "../api";
 import { resetRegisterForm, state } from "../store";
 import Keyboard from "../components/Keyboard.vue";
+import ChineseInput from "../components/ChineseInput.vue";
 
 const available = computed(() => state.roster.filter((r) => !r.claimed));
 
@@ -63,7 +64,7 @@ onMounted(() => {
     <label>YY 号（3-20 位，字母数字下划线，不能纯数字）</label>
     <input v-model="state.regHandle" placeholder="类似微信号，唯一" />
     <label>用户名（可中文，可重复）</label>
-    <input v-model="state.regDisplay" placeholder="聊天里显示的名字" />
+    <ChineseInput v-model="state.regDisplay" placeholder="聊天里显示的名字" :maxlength="20" />
     <label>密码（8 位以上，含字母和数字）</label>
     <input v-model="state.regPassword" type="password" />
     <Keyboard v-model="state.regPassword" />

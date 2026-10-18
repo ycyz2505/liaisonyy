@@ -3,6 +3,8 @@ import { computed, onMounted, ref } from "vue";
 import { send } from "../api";
 import { formatTime, showError, state } from "../store";
 import type { ReportDto } from "../types";
+import ChineseInput from "../components/ChineseInput.vue";
+import ChineseTextarea from "../components/ChineseTextarea.vue";
 
 const updVersion = ref("");
 const updMin = ref("");
@@ -281,8 +283,8 @@ function back() {
       <div class="sep"></div>
       <h3>创建班级</h3>
       <div class="row">
-        <input v-model="state.adminClassName" placeholder="名称，如 高二(5)班" />
-        <input v-model="state.adminClassGrade" placeholder="年级" />
+        <ChineseInput v-model="state.adminClassName" placeholder="名称，如 高二(5)班" />
+        <ChineseInput v-model="state.adminClassGrade" placeholder="年级" />
       </div>
       <button style="margin-top: 8px" @click="createClass">创建</button>
 
@@ -296,7 +298,7 @@ function back() {
         </option>
       </select>
       <label>名单（每行一个姓名）</label>
-      <textarea v-model="state.adminRosterText" placeholder="张三&#10;李四"></textarea>
+      <ChineseTextarea v-model="state.adminRosterText" placeholder="张三&#10;李四" :rows="4" />
       <button style="margin-top: 8px" @click="importRoster">导入</button>
 
       <div class="sep"></div>
