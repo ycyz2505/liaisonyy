@@ -61,6 +61,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
+      - name: Install NASM (ring)
+        run: choco install nasm -y --no-progress
       - name: Install frontend deps
         working-directory: client
         run: npm ci
