@@ -3595,6 +3595,23 @@ fn spawn_discovery(api_port: u16) {
     });
 }
 
+#[cfg(windows)]
+fn message_box(text: &str) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        MessageBoxW, MB_ICONINFORMATION, MB_OK,
+    };
+    let body: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+    let title: Vec<u16> = "liaisonyy".encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            body.as_ptr(),
+            title.as_ptr(),
+            MB_OK | MB_ICONINFORMATION,
+        );
+    }
+}
+
 fn main() {
     std::panic::set_hook(Box::new(|info| {
         let dir = std::env::current_exe()
@@ -3674,6 +3691,7 @@ async fn run() -> anyhow::Result<()> {
                 let _ = std::fs::remove_file(&p);
                 let _ = std::fs::remove_file(dir.join("liaisonyy-server.cmd"));
                 println!("autostart removed: {}", p.display());
+                message_box(&format!("已删除开机自启脚本：\n{}", p.display()));
             } else {
                 std::fs::create_dir_all(&dir)?;
                 let exe = std::env::current_exe()?;
@@ -3688,6 +3706,7 @@ async fn run() -> anyhow::Result<()> {
                 std::fs::write(&p, script)?;
                 let _ = std::fs::remove_file(dir.join("liaisonyy-server.cmd"));
                 println!("autostart installed: {}", p.display());
+                message_box(&format!("已安装开机自启脚本（隐藏窗口启动）：\n{}", p.display()));
             }
         }
         #[cfg(not(windows))]
@@ -3701,10 +3720,14 @@ async fn run() -> anyhow::Result<()> {
     {
         let log_dir = data.join("logs");
         std::fs::create_dir_all(&log_dir)?;
+        let log_path = log_dir.join("server.log");
+        if std::fs::metadata(&log_path).map(|m| m.len() > 5 * 1024 * 1024).unwrap_or(false) {
+            let _ = std::fs::rename(&log_path, log_dir.join("server.log.1"));
+        }
         if let Ok(file) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(log_dir.join("server.log"))
+            .open(log_path)
         {
             let _ = tracing_subscriber::fmt()
                 .with_env_filter(
