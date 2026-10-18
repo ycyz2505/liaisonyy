@@ -2,7 +2,8 @@
 
 杨村一中（杨一）内网聊天系统 · liaison + YangYi
 
-> 0.1.0 首个可用版本：注册、登录（PIN/密码）、好友、私聊、班级群、班级/名单管理、重置密钥、审计统计。
+> 0.1.0：注册、登录（PIN/密码）、好友、私聊、班级群、班级/名单管理、重置密钥、审计统计。
+> 客户端已迁移到 **Tauri 2 + Vue 3 + TypeScript + 纯 CSS**；服务端与 `core` 加密/协议不变。
 > 设计稿见 [设计稿.md](设计稿.md)，使用指南见 [docs/](docs/)。
 
 ---
@@ -11,50 +12,64 @@
 
 ```
 liaisonyy/
-├─ Cargo.toml                 # workspace
-├─ build.ps1                  # 设置 MinGW/NASM/Rust 路径后调用 cargo
+├─ Cargo.toml                 # workspace（core / server / client/src-tauri）
+├─ build.ps1                  # 本地服务端构建（GNU/MinGW）
 ├─ .cargo/config.toml         # rsproxy 镜像、GNU 链接器、静态 CRT
 ├─ crates/
 │  ├─ core/                   # 协议、Argon2id、X25519 信封加密、AES-GCM
-│  ├─ server/                 # axum + SQLite WAL + rustls + 管理后台
-│  └─ client/                 # egui 小窗 + 托盘 + 后台网络/加解密线程
-├─ admin-web/index.html       # 内嵌网页管理后台
+│  └─ server/                 # axum + SQLite WAL + rustls(ring) + 管理后台
+├─ client/
+│  ├─ src/                    # Vue 3 + TypeScript 前端
+│  ├─ src-tauri/              # Tauri Rust 后端（复用 net/store）
+│  ├─ package.json
+│  └─ vite.config.ts
+├─ admin-web/index.html       # 内嵌网页管理后台（原生 JS）
 ├─ docs/                      # 三份使用指南
+├─ .github/workflows/build.yml
 ├─ 设计稿.md
 └─ pmt.md                     # 原始需求（未改动）
 ```
 
 ---
 
-## 2. 构建环境
+## 2. 构建
 
-当前开发机使用：
+### 2.1 服务端（本地可用）
 
-- Rust 1.99（`x86_64-pc-windows-gnu`）
-- 便携 MinGW-w64（WinLibs）
-- NASM（rustls/ring 需要）
-- 依赖镜像：`rsproxy.cn`（见 `.cargo/config.toml`）
-
-`build.ps1` 会自动把 MinGW、NASM、cargo 加入 PATH。构建命令：
+当前开发机使用 Rust 1.99 GNU + 便携 MinGW + NASM；`build.ps1` 会自动设置 PATH：
 
 ```powershell
-# 编译检查
 .\build.ps1 check -p liaisonyy-server
-.\build.ps1 check -p liaisonyy-client
-
-# 调试构建
-.\build.ps1 build -p liaisonyy-server -p liaisonyy-client
-
-# 发布构建（单文件 exe，静态 CRT）
-.\build.ps1 build --release -p liaisonyy-server -p liaisonyy-client
+.\build.ps1 build --release -p liaisonyy-server
 ```
 
-产物位置：
+产物：`target\release\liaisonyy-server.exe`（Windows）、CI 另出 Linux musl。
 
-- `target\debug\liaisonyy-server.exe` / `liaisonyy-client.exe`
-- `target\release\...`（发布）
+### 2.2 客户端（Tauri，推荐 CI 构建）
 
-> 构建目录默认在 `liaisonyy\target`；如果磁盘紧张，可在 `.cargo/config.toml` 里把 `target-dir` 改到空间更大的盘。
+Tauri 客户端需要 Windows MSVC；本机磁盘不够装 MSVC，因此官方构建走 **GitHub Actions**：
+
+- `.github/workflows/build.yml`
+- `client` job：`windows-latest` + Node 22 + Rust MSVC，`npm ci` → `npm run build:tauri`（`tauri build --no-bundle`）
+- `server-windows` job：Windows MSVC 服务端
+- `server-linux` job：Linux musl 服务端
+- tag `v*` 时自动创建 Release
+
+本地只构建前端（无需 MSVC）：
+
+```powershell
+cd client
+npm install
+npm run build
+```
+
+> 本地若要跑完整 Tauri，需要安装 Visual Studio Build Tools（C++ 桌面开发），约 7 GB。
+
+### 2.3 产物
+
+- `liaisonyy.exe` + `WebView2Loader.dll`：客户端（Windows x64）
+- `liaisonyy-server.exe`：服务端（Windows x64）
+- `liaisonyy-server`：服务端（Linux x64，musl 静态）
 
 ---
 
@@ -64,7 +79,7 @@ liaisonyy/
 
 ```powershell
 mkdir D:\liaisonyy
-copy target\debug\liaisonyy-server.exe D:\liaisonyy\
+copy liaisonyy-server.exe D:\liaisonyy\
 cd D:\liaisonyy
 .\liaisonyy-server.exe --data-dir D:\liaisonyy\data --port 47820
 ```
@@ -73,14 +88,12 @@ cd D:\liaisonyy
 
 ### 3.2 客户端
 
-```powershell
-mkdir D:\liaisonyy-client
-copy target\debug\liaisonyy-client.exe D:\liaisonyy-client\
-cd D:\liaisonyy-client
-.\liaisonyy-client.exe
-```
+把 `liaisonyy.exe` **和 `WebView2Loader.dll` 放在同一目录**（例如 `D:\liaisonyy-client\`），双击 `liaisonyy.exe`。
 
-客户端默认连接 `https://127.0.0.1:47820`；可在欢迎页/设置里改服务器地址。
+- 依赖系统 **WebView2 Runtime**（学校电脑有 Edge/WebView2；缺失时启动会失败）。
+- 首次启动显示欢迎页；之后静默进托盘，托盘左键显示/隐藏。
+- 大关闭按钮 = 退登 + 隐藏。
+- 默认连接 `https://127.0.0.1:47820`；可在欢迎页/设置里改服务器地址。
 
 ### 3.3 端口
 
@@ -89,7 +102,7 @@ cd D:\liaisonyy-client
 | 47820 | TCP/TLS | API + 管理后台 |
 | 47821 | UDP | 服务发现（0.1.0 未启用） |
 
-管理后台：`https://服务器IP:47820/admin`（自签证书需手动信任）。
+管理后台：`https://服务器IP:47820/admin`（自签证书需手动信任；保持原生 JS）。
 
 ---
 
@@ -106,7 +119,7 @@ cd D:\liaisonyy-client
 | 班级群（纯文本、密钥版本） | ✅ |
 | 重置密钥（8 位一次性） | ✅ |
 | 管理后台（统计/审计/名单） | ✅ |
-| 客户端托盘/右下角小窗/大关闭按钮 | ✅ |
+| Tauri 客户端：托盘/右下角小窗/大关闭按钮 | ✅（CI 构建） |
 | 离线队列（密文）+ 轮询 | ✅ |
 | 转班、举报、头像、自动更新、UDP 发现、WebSocket、老板键、完整软键盘 | ⏳ 后续版本 |
 | 管理员聊天解密查看工具 | ⏳ 后续版本（当前只有重置密钥） |
@@ -118,8 +131,9 @@ cd D:\liaisonyy-client
 - 消息在客户端用会话密钥加密，服务器只存密文和包裹后的密钥。
 - 密码/PIN 用 Argon2id 派生；服务器只存 verify 和长度，不存明文。
 - 总管理员/班级管理员托管密钥按设计稿实现（内部机制，不对外披露）。
-- 当前版本客户端接受自签 TLS 证书（未做指纹固定），这是 0.1.0 的已知限制。
+- 客户端接受自签 TLS 证书（未做指纹固定），这是 0.1.0 的已知限制。
 - 本地缓存只存密文和包裹；退登清除内存密钥。
+- 客户端依赖 WebView2；Tauri 的 webview 不接触密钥，网络/加解密在 Rust 侧。
 
 ---
 
@@ -127,8 +141,10 @@ cd D:\liaisonyy-client
 
 - 客户端每 2 秒轮询，不是 WebSocket。
 - 服务发现、自动更新、老板键、完整软键盘尚未实现。
+- 客户端分发是 `exe + WebView2Loader.dll` 两个文件（用户已接受）。
+- Tauri 客户端内存约 100–250 MB；服务端仍 < 40 MB。
 - 班级群密钥由服务端在成员变化时轮换（服务端短暂接触 GK），1:1 消息为客户端生成 DEK。
-- 管理后台与 API 同端口（`0.0.0.0:47820`），没有单独的 loopback 限制；生产环境请用防火墙限制来源，或后续版本拆分端口。
+- 管理后台与 API 同端口（`0.0.0.0:47820`），没有单独的 loopback 限制；生产环境请用防火墙限制来源。
 - 没有自动备份；请手动备份 `data\`。
 
 ---

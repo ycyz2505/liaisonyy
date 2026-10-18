@@ -1,0 +1,162 @@
+name: build
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Use crates.io on CI
+        shell: bash
+        run: |
+          if [ -f .cargo/config.toml ]; then
+            sed -i '/replace-with = "rsproxy-sparse"/d' .cargo/config.toml
+            sed -i '/\[source.rsproxy-sparse\]/,+1d' .cargo/config.toml
+          fi
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      - name: Install NASM (ring)
+        run: choco install nasm -y --no-progress
+      - name: End-to-end test
+        run: cargo test -p liaisonyy-server --test e2e -- --nocapture
+
+  client:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Use crates.io on CI
+        shell: bash
+        run: |
+          if [ -f .cargo/config.toml ]; then
+            sed -i '/replace-with = "rsproxy-sparse"/d' .cargo/config.toml
+            sed -i '/\[source.rsproxy-sparse\]/,+1d' .cargo/config.toml
+          fi
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      - name: Install frontend deps
+        working-directory: client
+        run: npm ci
+      - name: Build Tauri client
+        working-directory: client
+        run: npm run build:tauri
+      - name: Collect client artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifact | Out-Null
+          if (Test-Path target/release/liaisonyy.exe) { Copy-Item target/release/liaisonyy.exe artifact/ }
+          $dll = Get-ChildItem -Path target -Recurse -Filter WebView2Loader.dll -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($dll) { Copy-Item $dll.FullName artifact/ }
+          Get-ChildItem artifact | Format-Table Name, Length
+      - name: Check client dependencies
+        shell: pwsh
+        run: |
+          if (Test-Path artifact/liaisonyy.exe) {
+            $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
+            cmd /c "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" >nul && dumpbin /dependents artifact\liaisonyy.exe"
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: liaisonyy-client-windows
+          path: artifact/*
+          if-no-files-found: error
+
+  server-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Use crates.io on CI
+        shell: bash
+        run: |
+          if [ -f .cargo/config.toml ]; then
+            sed -i '/replace-with = "rsproxy-sparse"/d' .cargo/config.toml
+            sed -i '/\[source.rsproxy-sparse\]/,+1d' .cargo/config.toml
+          fi
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      - name: Install NASM (ring)
+        run: choco install nasm -y --no-progress
+      - name: Build server
+        run: cargo build --release -p liaisonyy-server --target x86_64-pc-windows-msvc
+      - uses: actions/upload-artifact@v4
+        with:
+          name: liaisonyy-server-windows
+          path: target/x86_64-pc-windows-msvc/release/liaisonyy-server.exe
+          if-no-files-found: error
+
+  server-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Use crates.io on CI
+        shell: bash
+        run: |
+          if [ -f .cargo/config.toml ]; then
+            sed -i '/replace-with = "rsproxy-sparse"/d' .cargo/config.toml
+            sed -i '/\[source.rsproxy-sparse\]/,+1d' .cargo/config.toml
+          fi
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      - name: Install musl + NASM
+        run: sudo apt-get update && sudo apt-get install -y musl-tools nasm
+      - name: Build server
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+        run: cargo build --release -p liaisonyy-server --target x86_64-unknown-linux-musl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: liaisonyy-server-linux
+          path: target/x86_64-unknown-linux-musl/release/liaisonyy-server
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [client, server-windows, server-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true

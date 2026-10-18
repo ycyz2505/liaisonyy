@@ -1,8 +1,0 @@
-﻿cargo :     Checking liaisonyy-server v0.1.0 (C:\Users\noilinux\Desktop\ycyz2505.github.io\liaisonyy\crates\server)
-At C:\Users\noilinux\Desktop\ycyz2505.github.io\liaisonyy\build.ps1:2 char:1
-+ cargo @args
-+ ~~~~~~~~~~~
-    + CategoryInfo          : NotSpecified: (    Checking li...\crates\server):String) [], RemoteException
-    + FullyQualifiedErrorId : NativeCommandError
- 
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.43s

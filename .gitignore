@@ -1,0 +1,11 @@
+target/
+client/node_modules/
+client/dist/
+client/src-tauri/gen/
+dist/
+*.log
+*.zip
+*.exe
+rel-*.txt
+client-*.txt
+server-*.txt

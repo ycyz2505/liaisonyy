@@ -1564,6 +1564,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/admin/", get(admin_page))
         .with_state(state);
     let (cert, key) = ensure_tls(&data)?;
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let config = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key).await?;
     let addr: SocketAddr = format!("0.0.0.0:{port}").parse()?;
     println!("liaisonyy server data: {}", data.display());

@@ -7,8 +7,8 @@ edition.workspace = true
 liaisonyy-core = { path = "../core" }
 axum = { version = "0.7", features = ["ws"] }
 tokio = { version = "1", features = ["full"] }
-axum-server = { version = "0.7", features = ["tls-rustls"] }
-rustls = "0.23"
+axum-server = { version = "0.7", features = ["tls-rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rcgen = "0.13"
 rusqlite = { version = "0.31", features = ["bundled"] }
 serde = { workspace = true }
