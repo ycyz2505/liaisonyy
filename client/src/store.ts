@@ -1,5 +1,6 @@
 import { reactive } from "vue";
 import { send, serverNowMs } from "./api";
+import { setFileData } from "./files";
 import type {
   AccountPublic,
   AdminStats,
@@ -12,6 +13,8 @@ import type {
   FriendRequestView,
   LoginResponse,
   MessageView,
+  MyProfileResponse,
+  PublicProfile,
   RosterEntry,
 } from "./types";
 
@@ -25,7 +28,10 @@ export type Page =
   | "Chat"
   | "Settings"
   | "Admin"
-  | "Reset";
+  | "Reset"
+  | "Profile"
+  | "Security"
+  | "UserProfile";
 export type Tab = "messages" | "contacts" | "me";
 
 export const state = reactive({
@@ -74,6 +80,26 @@ export const state = reactive({
   regPassword: "",
   regPin: "",
   regPolicy: "pin_allowed" as "pin_allowed" | "password_only",
+  myProfile: null as MyProfileResponse | null,
+  userProfile: null as PublicProfile | null,
+  blocks: [] as PublicProfile[],
+  profileDisplayName: "",
+  profileSignature: "",
+  profileBio: "",
+  profileGender: "",
+  profileBirthday: "",
+  profileSocials: "",
+  profileShowGender: true,
+  profileShowBirthday: true,
+  profileShowSocials: true,
+  lookupQuery: "",
+  secOld: "",
+  secNew: "",
+  secNew2: "",
+  secPin: "",
+  secPin2: "",
+  secPolicyPassword: "",
+  secPolicy: "pin_allowed" as "pin_allowed" | "password_only",
   toast: "",
   error: "",
 });
@@ -134,6 +160,22 @@ export function clearSensitiveForms(): void {
   state.friendMsg = "";
   state.recoveryCode = "";
   state.adminUid = "";
+  state.secOld = "";
+  state.secNew = "";
+  state.secNew2 = "";
+  state.secPin = "";
+  state.secPin2 = "";
+  state.secPolicyPassword = "";
+  state.lookupQuery = "";
+  state.profileDisplayName = "";
+  state.profileSignature = "";
+  state.profileBio = "";
+  state.profileGender = "";
+  state.profileBirthday = "";
+  state.profileSocials = "";
+  state.myProfile = null;
+  state.userProfile = null;
+  state.blocks = [];
 }
 
 export function newId(): string {
@@ -187,6 +229,8 @@ export function handleEv(ev: Ev): void {
       state.tab = "messages";
       send({ type: "Requests" });
       send({ type: "Friends" });
+      send({ type: "GetMyProfile" });
+      send({ type: "ListBlocks" });
       if (ev.data.offline) showToast("已进入离线模式，消息会先存在本机");
       break;
     }
@@ -263,6 +307,72 @@ export function handleEv(ev: Ev): void {
       state.resetNewPassword = "";
       state.resetNewPin = "";
       state.page = "Login";
+      break;
+    case "MyProfile": {
+      state.myProfile = ev.data;
+      state.profileDisplayName = ev.data.display_name;
+      state.profileSignature = ev.data.signature;
+      state.profileBio = ev.data.bio;
+      if (state.user) {
+        state.user.display_name = ev.data.display_name;
+        state.user.login_policy = ev.data.login_policy;
+        state.user.avatar_file_id = ev.data.avatar_file_id;
+      }
+      break;
+    }
+    case "MyProfilePrivate": {
+      const p = ev.data;
+      const str = (k: string) => (typeof p[k] === "string" ? (p[k] as string) : "");
+      state.profileGender = str("gender");
+      state.profileBirthday = str("birthday");
+      state.profileSocials = str("socials");
+      break;
+    }
+    case "UserProfile":
+      state.userProfile = ev.data;
+      state.page = "UserProfile";
+      break;
+    case "Blocks":
+      state.blocks = ev.data;
+      break;
+    case "ImageUploaded":
+      break;
+    case "FileData":
+      setFileData(ev.data.id, ev.data.mime, ev.data.data);
+      break;
+    case "FriendDeleted": {
+      const { uid } = ev.data;
+      if (state.userProfile?.uid === uid) state.userProfile.is_friend = false;
+      state.friends = state.friends.filter((f) => f.uid !== uid);
+      break;
+    }
+    case "Blocked": {
+      const { uid } = ev.data;
+      if (state.userProfile?.uid === uid) state.userProfile.is_blocked = true;
+      break;
+    }
+    case "Unblocked": {
+      const { uid } = ev.data;
+      if (state.userProfile?.uid === uid) state.userProfile.is_blocked = false;
+      state.blocks = state.blocks.filter((b) => b.uid !== uid);
+      break;
+    }
+    case "PasswordChanged":
+      state.secOld = "";
+      state.secNew = "";
+      state.secNew2 = "";
+      break;
+    case "PinChanged":
+      state.secPin = "";
+      state.secPin2 = "";
+      state.secPolicyPassword = "";
+      if (state.user) state.user.login_policy = "pin_allowed";
+      break;
+    case "LoginPolicyChanged":
+      if (state.user) state.user.login_policy = ev.data.policy;
+      state.secPolicyPassword = "";
+      state.secPin = "";
+      state.secPin2 = "";
       break;
     case "Toast":
       showToast(ev.data);

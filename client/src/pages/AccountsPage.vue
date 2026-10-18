@@ -3,6 +3,7 @@ import { computed, onMounted } from "vue";
 import { send } from "../api";
 import { resetRegisterForm, state } from "../store";
 import type { AccountPublic } from "../types";
+import Avatar from "../components/Avatar.vue";
 
 const sorted = computed(() =>
   [...state.accounts].sort((a, b) => b.unread - a.unread || a.uid - b.uid),
@@ -56,7 +57,7 @@ onMounted(refresh);
         class="account-row"
         @click="openAccount(a)"
       >
-        <div class="avatar">{{ a.display_name.slice(0, 1) || "?" }}</div>
+        <Avatar :file-id="a.avatar_file_id" :name="a.display_name" />
         <div class="account-main">
           <div class="account-name">{{ a.display_name }}</div>
           <div class="account-sub">@{{ a.handle }} · UID {{ a.uid }}</div>

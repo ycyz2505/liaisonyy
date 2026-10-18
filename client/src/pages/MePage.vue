@@ -1,6 +1,12 @@
 <script setup lang="ts">
 import { send } from "../api";
 import { state } from "../store";
+import Avatar from "../components/Avatar.vue";
+
+function openProfile() {
+  send({ type: "GetMyProfile" });
+  state.page = "Profile";
+}
 
 function logout() {
   send({ type: "Logout" });
@@ -10,10 +16,12 @@ function logout() {
 <template>
   <div>
     <template v-if="state.user">
-      <div class="card" style="display: flex; align-items: center; gap: 10px">
-        <div class="avatar" style="width: 48px; height: 48px; font-size: 20px">
-          {{ state.user.display_name.slice(0, 1) || "?" }}
-        </div>
+      <div class="card profile-card" @click="openProfile">
+        <Avatar
+          :file-id="state.myProfile?.avatar_file_id ?? state.user.avatar_file_id"
+          :name="state.user.display_name"
+          :size="48"
+        />
         <div>
           <div class="account-name" style="font-size: 17px">{{ state.user.display_name }}</div>
           <div class="account-sub">
@@ -33,7 +41,9 @@ function logout() {
       </div>
     </template>
 
-    <button style="margin-top: 10px" @click="state.page = 'Settings'">设置</button>
+    <button class="primary" style="margin-top: 10px" @click="openProfile">我的资料</button>
+    <button style="margin-top: 8px" @click="state.page = 'Security'">密码与 PIN</button>
+    <button style="margin-top: 8px" @click="state.page = 'Settings'">设置</button>
     <button
       v-if="state.user && (state.user.role === 'root' || state.user.role === 'class_admin')"
       style="margin-top: 8px"

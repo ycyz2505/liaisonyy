@@ -3,6 +3,7 @@ use liaisonyy_core::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::io::Read;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -71,6 +72,29 @@ pub enum Cmd {
     CreateResetKey { uid: i64, expires_minutes: i64 },
     Reset { key: String, code: String, new_password: String, new_pin: Option<String> },
     UpdateMe { display_name: String },
+    GetMyProfile,
+    UpdateProfile {
+        display_name: String,
+        signature: String,
+        bio: String,
+        gender: String,
+        birthday: String,
+        socials: String,
+        public_gender: String,
+        public_birthday: String,
+        public_socials: String,
+    },
+    UploadImage { data: String, kind: String },
+    ChangePassword { old_input: String, new_password: String },
+    SetPin { password_input: String, pin: String },
+    SetLoginPolicy { password_input: String, policy: String, pin: Option<String> },
+    LookupUser { query: String },
+    GetUserProfile { uid: i64 },
+    DeleteFriend { uid: i64 },
+    BlockUser { uid: i64 },
+    UnblockUser { uid: i64 },
+    ListBlocks,
+    FetchFile { id: i64 },
 }
 
 #[derive(Serialize, Clone)]
@@ -92,6 +116,18 @@ pub enum Ev {
     AdminClasses(Vec<ClassInfo>),
     ResetKey { code: String, expires_at: i64 },
     ResetDone,
+    MyProfile(MyProfileResponse),
+    MyProfilePrivate(Value),
+    UserProfile(PublicProfile),
+    Blocks(Vec<PublicProfile>),
+    ImageUploaded { kind: String, file_id: i64 },
+    FileData { id: i64, mime: String, data: String },
+    FriendDeleted { uid: i64 },
+    Blocked { uid: i64 },
+    Unblocked { uid: i64 },
+    PasswordChanged,
+    PinChanged,
+    LoginPolicyChanged { policy: String },
     Toast(String),
     Error(String),
     Offline(bool),
@@ -105,9 +141,27 @@ struct Session {
     login_policy: String,
     public_key: String,
     sk_u: [u8; 32],
+    kek: [u8; 32],
+    pdk: [u8; 32],
     conv_keys: HashMap<i64, HashMap<i64, [u8; 32]>>,
     root_pk: Option<String>,
     class_keys: HashMap<i64, [u8; 32]>,
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        self.sk_u.fill(0);
+        self.kek.fill(0);
+        self.pdk.fill(0);
+        for m in self.conv_keys.values_mut() {
+            for k in m.values_mut() {
+                k.fill(0);
+            }
+        }
+        for k in self.class_keys.values_mut() {
+            k.fill(0);
+        }
+    }
 }
 
 struct Worker {
@@ -156,6 +210,18 @@ pub fn spawn(settings: Settings, cache: Cache) -> (Sender<Cmd>, Receiver<Ev>) {
         }
     });
     (cmd_tx, ev_rx)
+}
+
+fn urlencode(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
 }
 
 impl Worker {
@@ -365,7 +431,345 @@ impl Worker {
                     }
                 }
             }
+            Cmd::GetMyProfile => self.load_my_profile(),
+            Cmd::UpdateProfile {
+                display_name,
+                signature,
+                bio,
+                gender,
+                birthday,
+                socials,
+                public_gender,
+                public_birthday,
+                public_socials,
+            } => {
+                if let Err(e) = self.do_update_profile(
+                    display_name,
+                    signature,
+                    bio,
+                    gender,
+                    birthday,
+                    socials,
+                    public_gender,
+                    public_birthday,
+                    public_socials,
+                ) {
+                    self.err(e);
+                }
+            }
+            Cmd::UploadImage { data, kind } => {
+                if let Err(e) = self.do_upload_image(data, kind) {
+                    self.err(e);
+                }
+            }
+            Cmd::ChangePassword { old_input, new_password } => {
+                if let Err(e) = self.do_change_password(old_input, new_password) {
+                    self.err(e);
+                }
+            }
+            Cmd::SetPin { password_input, pin } => {
+                if let Err(e) = self.do_set_pin(password_input, pin) {
+                    self.err(e);
+                }
+            }
+            Cmd::SetLoginPolicy { password_input, policy, pin } => {
+                if let Err(e) = self.do_set_login_policy(password_input, policy, pin) {
+                    self.err(e);
+                }
+            }
+            Cmd::LookupUser { query } => match self.do_get::<PublicProfile>(&format!("/api/v1/lookup/user?q={}", urlencode(&query))) {
+                Ok(v) => self.send(Ev::UserProfile(v)),
+                Err(e) => self.err(e),
+            },
+            Cmd::GetUserProfile { uid } => match self.do_get::<PublicProfile>(&format!("/api/v1/users/{uid}/profile")) {
+                Ok(v) => self.send(Ev::UserProfile(v)),
+                Err(e) => self.err(e),
+            },
+            Cmd::DeleteFriend { uid } => {
+                let r = self.token().and_then(|t| self.call("DELETE", &format!("/api/v1/friends/{uid}"), Some(&t), None));
+                match r {
+                    Ok(_) => {
+                        self.toast("已删除好友");
+                        self.send(Ev::FriendDeleted { uid });
+                        if let Ok(v) = self.do_get::<Vec<FriendDto>>("/api/v1/friends") {
+                            self.send(Ev::Friends(v));
+                        }
+                        if let Ok(c) = self.load_conversations(false) {
+                            self.send(Ev::Conversations(c));
+                        }
+                    }
+                    Err(e) => self.err(e),
+                }
+            }
+            Cmd::BlockUser { uid } => {
+                let r = self.token().and_then(|t| self.call("POST", "/api/v1/blocks", Some(&t), Some(json!({"uid": uid}))));
+                match r {
+                    Ok(_) => {
+                        self.toast("已拉黑，对方无法再给你发消息");
+                        self.send(Ev::Blocked { uid });
+                    }
+                    Err(e) => self.err(e),
+                }
+            }
+            Cmd::UnblockUser { uid } => {
+                let r = self.token().and_then(|t| self.call("DELETE", &format!("/api/v1/blocks/{uid}"), Some(&t), None));
+                match r {
+                    Ok(_) => {
+                        self.toast("已解除拉黑");
+                        self.send(Ev::Unblocked { uid });
+                    }
+                    Err(e) => self.err(e),
+                }
+            }
+            Cmd::ListBlocks => match self.do_get::<Vec<PublicProfile>>("/api/v1/blocks") {
+                Ok(v) => self.send(Ev::Blocks(v)),
+                Err(e) => self.err(e),
+            },
+            Cmd::FetchFile { id } => match self.fetch_file(id) {
+                Ok((mime, data)) => self.send(Ev::FileData { id, mime, data }),
+                Err(e) => self.err(e),
+            },
         }
+    }
+
+    fn do_update_profile(
+        &mut self,
+        display_name: String,
+        signature: String,
+        bio: String,
+        gender: String,
+        birthday: String,
+        socials: String,
+        public_gender: String,
+        public_birthday: String,
+        public_socials: String,
+    ) -> Result<(), String> {
+        let (uid, pdk, kek) = {
+            let s = self.session.as_ref().ok_or_else(|| "未登录".to_string())?;
+            (s.uid, s.pdk, s.kek)
+        };
+        let profile = json!({
+            "display_name": display_name.clone(),
+            "signature": signature.clone(),
+            "bio": bio.clone(),
+            "gender": gender.clone(),
+            "birthday": birthday.clone(),
+            "socials": socials.clone(),
+        });
+        let plain = serde_json::to_vec(&profile).map_err(|e| e.to_string())?;
+        let aad = format!("liaisonyy-profile-v1:{uid}");
+        let enc = b64e(&aead_encrypt(&pdk, &plain, aad.as_bytes()));
+        let own = wrap_key(&kek, &pdk);
+        let t = self.token()?;
+        self.call(
+            "PATCH",
+            "/api/v1/me/profile",
+            Some(&t),
+            Some(json!({
+                "display_name": display_name,
+                "signature": signature,
+                "bio": bio,
+                "public_gender": public_gender,
+                "public_birthday": public_birthday,
+                "public_socials": public_socials,
+                "profile_enc": enc,
+                "profile_own": own,
+            })),
+        )?;
+        self.toast("资料已保存");
+        self.load_my_profile();
+        Ok(())
+    }
+
+    fn load_my_profile(&mut self) {
+        match self.do_get::<MyProfileResponse>("/api/v1/me/profile") {
+            Ok(v) => {
+                let private = self.decrypt_my_profile(&v);
+                self.send(Ev::MyProfile(v));
+                if let Some(p) = private {
+                    self.send(Ev::MyProfilePrivate(p));
+                }
+            }
+            Err(e) => self.err(e),
+        }
+    }
+
+    fn decrypt_my_profile(&self, v: &MyProfileResponse) -> Option<Value> {
+        let s = self.session.as_ref()?;
+        if v.profile_enc.is_empty() {
+            return None;
+        }
+        let raw = b64d(&v.profile_enc).ok()?;
+        let aad = format!("liaisonyy-profile-v1:{}", s.uid);
+        let plain = aead_decrypt(&s.pdk, &raw, aad.as_bytes()).ok()?;
+        serde_json::from_slice::<Value>(&plain).ok()
+    }
+
+    fn do_upload_image(&mut self, data: String, kind: String) -> Result<(), String> {
+        let t = self.token()?;
+        let v = self.call(
+            "POST",
+            "/api/v1/me/avatar",
+            Some(&t),
+            Some(json!({"data": data, "kind": kind})),
+        )?;
+        let file_id = v.get("file_id").and_then(|x| x.as_i64()).unwrap_or(0);
+        self.send(Ev::ImageUploaded { kind: kind.clone(), file_id });
+        self.toast(if kind == "background" { "背景已更新" } else { "头像已更新" });
+        self.load_my_profile();
+        Ok(())
+    }
+
+    fn do_change_password(&mut self, old_input: String, new_password: String) -> Result<(), String> {
+        let (sk_u, pdk) = {
+            let s = self.session.as_ref().ok_or_else(|| "未登录".to_string())?;
+            (s.sk_u, s.pdk)
+        };
+        let salt = new_salt();
+        let params = KdfParams::default();
+        let (kek, _) = derive_keys(&new_password, &salt, &params)?;
+        let own_priv = wrap_key(&kek, &sk_u);
+        let profile_own = wrap_key(&kek, &pdk);
+        let t = self.token()?;
+        self.call(
+            "POST",
+            "/api/v1/me/password",
+            Some(&t),
+            Some(json!({
+                "old_input": old_input,
+                "new_password": new_password,
+                "pwd_salt": salt,
+                "pwd_params": params,
+                "own_priv": own_priv,
+                "profile_own": profile_own,
+            })),
+        )?;
+        if let Some(s) = self.session.as_mut() {
+            s.kek.fill(0);
+            s.kek = kek;
+        }
+        if let Some(c) = self.cache.login.as_mut() {
+            c.pwd_salt = salt;
+            c.pwd_params = params;
+            c.own_priv = own_priv;
+            c.profile_own = profile_own;
+        }
+        self.save_cache();
+        self.send(Ev::PasswordChanged);
+        self.toast("密码已修改，其他设备已退出登录");
+        Ok(())
+    }
+
+    fn do_set_pin(&mut self, password_input: String, pin: String) -> Result<(), String> {
+        let (sk_u, pdk) = {
+            let s = self.session.as_ref().ok_or_else(|| "未登录".to_string())?;
+            (s.sk_u, s.pdk)
+        };
+        let salt = new_salt();
+        let params = KdfParams::default();
+        let (kek, _) = derive_keys(&pin, &salt, &params)?;
+        let pin_own = wrap_key(&kek, &sk_u);
+        let profile_pin = wrap_key(&kek, &pdk);
+        let t = self.token()?;
+        self.call(
+            "POST",
+            "/api/v1/me/pin",
+            Some(&t),
+            Some(json!({
+                "password_input": password_input,
+                "pin": pin,
+                "pin_salt": salt,
+                "pin_params": params,
+                "pin_own": pin_own,
+                "profile_pin": profile_pin,
+            })),
+        )?;
+        if let Some(s) = self.session.as_mut() {
+            s.login_policy = "pin_allowed".into();
+        }
+        if let Some(c) = self.cache.login.as_mut() {
+            c.login_policy = "pin_allowed".into();
+            c.pin_salt = Some(salt);
+            c.pin_params = Some(params);
+            c.pin_own = Some(pin_own);
+            c.profile_pin = Some(profile_pin);
+        }
+        self.save_cache();
+        self.send(Ev::PinChanged);
+        self.toast("PIN 已更新");
+        Ok(())
+    }
+
+    fn do_set_login_policy(&mut self, password_input: String, policy: String, pin: Option<String>) -> Result<(), String> {
+        let t = self.token()?;
+        if policy == "pin_allowed" {
+            let pin = pin.ok_or_else(|| "请设置 PIN".to_string())?;
+            let (sk_u, pdk) = {
+                let s = self.session.as_ref().ok_or_else(|| "未登录".to_string())?;
+                (s.sk_u, s.pdk)
+            };
+            let salt = new_salt();
+            let params = KdfParams::default();
+            let (kek, _) = derive_keys(&pin, &salt, &params)?;
+            let pin_own = wrap_key(&kek, &sk_u);
+            let profile_pin = wrap_key(&kek, &pdk);
+            self.call(
+                "POST",
+                "/api/v1/me/login-policy",
+                Some(&t),
+                Some(json!({
+                    "password_input": password_input,
+                    "policy": policy,
+                    "pin": pin,
+                    "pin_salt": salt,
+                    "pin_params": params,
+                    "pin_own": pin_own,
+                    "profile_pin": profile_pin,
+                })),
+            )?;
+            if let Some(c) = self.cache.login.as_mut() {
+                c.login_policy = "pin_allowed".into();
+                c.pin_salt = Some(salt);
+                c.pin_params = Some(params);
+                c.pin_own = Some(pin_own);
+                c.profile_pin = Some(profile_pin);
+            }
+        } else {
+            self.call(
+                "POST",
+                "/api/v1/me/login-policy",
+                Some(&t),
+                Some(json!({"password_input": password_input, "policy": "password_only"})),
+            )?;
+            if let Some(c) = self.cache.login.as_mut() {
+                c.login_policy = "password_only".into();
+                c.pin_salt = None;
+                c.pin_params = None;
+                c.pin_own = None;
+                c.profile_pin = None;
+            }
+        }
+        if let Some(s) = self.session.as_mut() {
+            s.login_policy = policy.clone();
+        }
+        self.save_cache();
+        self.send(Ev::LoginPolicyChanged { policy: policy.clone() });
+        self.toast(if policy == "pin_allowed" { "已开启 PIN 登录" } else { "已改为仅密码登录" });
+        Ok(())
+    }
+
+    fn fetch_file(&self, id: i64) -> Result<(String, String), String> {
+        let url = format!("{}/api/v1/files/{id}", self.base.trim_end_matches('/'));
+        let resp = self.agent.get(&url).call().map_err(|e| format!("网络错误: {e}"))?;
+        let mime = resp.header("Content-Type").unwrap_or("image/png").to_string();
+        let mut buf = Vec::new();
+        resp.into_reader()
+            .read_to_end(&mut buf)
+            .map_err(|e| e.to_string())?;
+        if buf.len() > 8 * 1024 * 1024 {
+            return Err("文件过大".into());
+        }
+        Ok((mime, b64e(&buf)))
     }
 
     fn do_get<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T, String> {
@@ -550,6 +954,28 @@ impl Worker {
         }
         let mut sk_u = [0u8; 32];
         sk_u.copy_from_slice(&sk);
+        let profile_wrap = if kind == "pin" {
+            resp.profile_pin.clone().unwrap_or_default()
+        } else {
+            resp.profile_own.clone()
+        };
+        let (pdk, need_profile_key) = if profile_wrap.is_empty() {
+            if kind == "pin" {
+                return Err("资料密钥缺失，请改用密码登录一次".into());
+            }
+            let raw = b64d(&random_token()).map_err(|e| e.to_string())?;
+            let mut p = [0u8; 32];
+            p.copy_from_slice(&raw);
+            (p, true)
+        } else {
+            let raw = unwrap_key(&kek, &profile_wrap).map_err(|_| "资料密钥无法解密".to_string())?;
+            if raw.len() != 32 {
+                return Err("资料密钥长度异常".into());
+            }
+            let mut p = [0u8; 32];
+            p.copy_from_slice(&raw);
+            (p, false)
+        };
         let uid = resp.uid;
         let role = resp.role.clone();
         let class_id = resp.class_id;
@@ -563,11 +989,27 @@ impl Worker {
             login_policy,
             public_key,
             sk_u,
+            kek,
+            pdk,
             conv_keys: HashMap::new(),
             root_pk: None,
             class_keys: HashMap::new(),
         });
         let _ = self.do_bootstrap();
+        if need_profile_key {
+            let wrap = wrap_key(&kek, &pdk);
+            if self
+                .call(
+                    "POST",
+                    "/api/v1/me/profile-key",
+                    Some(&resp.token),
+                    Some(json!({"profile_own": wrap})),
+                )
+                .is_err()
+            {
+                self.toast("资料密钥未能保存，修改资料后请重新登录");
+            }
+        }
         self.settings.last_uid = Some(uid);
         if resp.class_id.is_some() {
             self.settings.class_id = resp.class_id;
@@ -615,6 +1057,24 @@ impl Worker {
         }
         let mut sk_u = [0u8; 32];
         sk_u.copy_from_slice(&sk);
+        let profile_wrap = if kind == "pin" {
+            cached.profile_pin.clone().unwrap_or_default()
+        } else {
+            cached.profile_own.clone()
+        };
+        let pdk = match unwrap_key(&kek, &profile_wrap) {
+            Ok(raw) if raw.len() == 32 => {
+                let mut p = [0u8; 32];
+                p.copy_from_slice(&raw);
+                p
+            }
+            _ => {
+                let raw = b64d(&random_token()).map_err(|e| e.to_string())?;
+                let mut p = [0u8; 32];
+                p.copy_from_slice(&raw);
+                p
+            }
+        };
         let mut conv_keys = HashMap::new();
         for c in &self.cache.conversations {
             if let Ok(w) = open_sealed(&b64e(&sk_u), &c.member_wrap) {
@@ -633,6 +1093,8 @@ impl Worker {
             login_policy: cached.login_policy.clone(),
             public_key: cached.public_key.clone(),
             sk_u,
+            kek,
+            pdk,
             conv_keys,
             root_pk: None,
             class_keys: HashMap::new(),

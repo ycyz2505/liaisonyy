@@ -13,6 +13,9 @@ import ChatPage from "./pages/ChatPage.vue";
 import SettingsPage from "./pages/SettingsPage.vue";
 import AdminPage from "./pages/AdminPage.vue";
 import ResetPage from "./pages/ResetPage.vue";
+import ProfilePage from "./pages/ProfilePage.vue";
+import SecurityPage from "./pages/SecurityPage.vue";
+import UserProfilePage from "./pages/UserProfilePage.vue";
 
 let unlisten: (() => void) | undefined;
 let timeTimer: number | undefined;
@@ -58,6 +61,9 @@ onBeforeUnmount(() => {
       <SettingsPage v-else-if="state.page === 'Settings'" />
       <AdminPage v-else-if="state.page === 'Admin'" />
       <ResetPage v-else-if="state.page === 'Reset'" />
+      <ProfilePage v-else-if="state.page === 'Profile'" />
+      <SecurityPage v-else-if="state.page === 'Security'" />
+      <UserProfilePage v-else-if="state.page === 'UserProfile'" />
     </main>
     <div v-if="state.toast" class="toast">{{ state.toast }}</div>
     <div v-if="state.error" class="error-bar">

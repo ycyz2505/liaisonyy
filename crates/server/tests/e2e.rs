@@ -22,8 +22,9 @@ fn call(agent: &ureq::Agent, method: &str, url: &str, token: Option<&str>, body:
     match res {
         Ok(r) => r.into_json::<Value>().unwrap_or(Value::Null),
         Err(ureq::Error::Status(code, r)) => {
+            let allow = r.header("allow").unwrap_or("").to_string();
             let text = r.into_string().unwrap_or_default();
-            panic!("HTTP {code} {url}: {text}");
+            panic!("HTTP {code} {method} {url} allow={allow:?}: {text}");
         }
         Err(e) => panic!("network {url}: {e}"),
     }
@@ -36,9 +37,44 @@ fn post(agent: &ureq::Agent, url: &str, token: Option<&str>, body: Value) -> Val
     call(agent, "POST", url, token, Some(body))
 }
 
+fn call_status(agent: &ureq::Agent, method: &str, url: &str, token: Option<&str>, body: Option<Value>) -> (u16, Value) {
+    let mut req = agent.request(method, url);
+    if let Some(t) = token {
+        req = req.set("Authorization", &format!("Bearer {t}"));
+    }
+    let res = if let Some(b) = body { req.send_json(b) } else { req.call() };
+    match res {
+        Ok(r) => (r.status(), r.into_json::<Value>().unwrap_or(Value::Null)),
+        Err(ureq::Error::Status(code, r)) => {
+            let v = r.into_json::<Value>().unwrap_or(Value::Null);
+            (code, v)
+        }
+        Err(e) => panic!("network {url}: {e}"),
+    }
+}
+
+fn get_bytes(agent: &ureq::Agent, url: &str) -> (u16, String, Vec<u8>) {
+    match agent.get(url).call() {
+        Ok(r) => {
+            let status = r.status();
+            let mime = r.header("Content-Type").unwrap_or("").to_string();
+            let mut buf = Vec::new();
+            std::io::Read::read_to_end(&mut r.into_reader(), &mut buf).unwrap();
+            (status, mime, buf)
+        }
+        Err(ureq::Error::Status(code, r)) => {
+            let mut buf = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut r.into_reader(), &mut buf);
+            (code, String::new(), buf)
+        }
+        Err(e) => panic!("network {url}: {e}"),
+    }
+}
+
 struct Reg {
     resp: Value,
     sk: [u8; 32],
+    pdk: [u8; 32],
     pk: String,
     uid: i64,
     token: String,
@@ -91,7 +127,9 @@ fn register(
     let token = resp["token"].as_str().unwrap().to_string();
     let mut sk_arr = [0u8; 32];
     sk_arr.copy_from_slice(&sk_raw);
-    Reg { resp, sk: sk_arr, pk, uid, token }
+    let mut pdk_arr = [0u8; 32];
+    pdk_arr.copy_from_slice(&pdk_raw);
+    Reg { resp, sk: sk_arr, pdk: pdk_arr, pk, uid, token }
 }
 
 struct ServerGuard(std::process::Child);
@@ -268,6 +306,156 @@ fn e2e_core_flow() {
     let cg_msg = cg_msgs.as_array().unwrap().iter().find(|m| m["sender_uid"] == ra.uid).unwrap();
     let cg_pt = aead_decrypt(&gk_b_arr, &b64d(cg_msg["ciphertext"].as_str().unwrap()).unwrap(), cg_id.to_string().as_bytes()).unwrap();
     assert_eq!(String::from_utf8(cg_pt).unwrap(), "class hello");
+
+    // profile: private fields stay encrypted, public copy is empty when hidden
+    let aad = format!("liaisonyy-profile-v1:{}", ra.uid);
+    let profile_enc = b64e(&aead_encrypt(
+        &ra.pdk,
+        br#"{"gender":"female","birthday":"2008-06-01","socials":"QQ 123"}"#,
+        aad.as_bytes(),
+    ));
+    call(
+        &a,
+        "PATCH",
+        &format!("{base}/api/v1/me/profile"),
+        Some(&ra.token),
+        Some(json!({
+            "display_name": "张三",
+            "signature": "hello",
+            "bio": "简介",
+            "public_gender": "",
+            "public_birthday": "",
+            "public_socials": "",
+            "profile_enc": profile_enc,
+        })),
+    );
+    let mine = get(&a, &format!("{base}/api/v1/me/profile"), Some(&ra.token));
+    assert_eq!(mine["signature"], "hello");
+    let dec = aead_decrypt(
+        &ra.pdk,
+        &b64d(mine["profile_enc"].as_str().unwrap()).unwrap(),
+        aad.as_bytes(),
+    )
+    .unwrap();
+    assert!(String::from_utf8(dec).unwrap().contains("female"));
+
+    let pub_a = get(&a, &format!("{base}/api/v1/users/{}/profile", ra.uid), Some(&rb.token));
+    assert_eq!(pub_a["signature"], "hello");
+    assert_eq!(pub_a["is_friend"], true);
+    assert!(pub_a["gender"].is_null());
+    assert!(pub_a["socials_json"].is_null());
+
+    let found = get(&a, &format!("{base}/api/v1/lookup/user?q=zhangsan"), Some(&rb.token));
+    assert_eq!(found["uid"].as_i64().unwrap(), ra.uid);
+
+    // avatar upload and encrypted media download
+    let png = b64d("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==").unwrap();
+    let up = post(
+        &a,
+        &format!("{base}/api/v1/me/avatar"),
+        Some(&ra.token),
+        json!({"data": format!("data:image/png;base64,{}", b64e(&png)), "kind": "avatar"}),
+    );
+    let file_id = up["file_id"].as_i64().unwrap();
+    assert!(file_id > 0);
+    let (st, mime, bytes) = get_bytes(&a, &format!("{base}/api/v1/files/{file_id}"));
+    assert_eq!(st, 200);
+    assert_eq!(mime, "image/png");
+    assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+
+    // change password; the existing key wraps are re-wrapped under the new KEK
+    let nsalt = new_salt();
+    let (kek2, _) = derive_keys("NewPass123a", &nsalt, &params).unwrap();
+    post(
+        &a,
+        &format!("{base}/api/v1/me/password"),
+        Some(&ra.token),
+        json!({
+            "old_input": "Pass1234a",
+            "new_password": "NewPass123a",
+            "pwd_salt": nsalt,
+            "pwd_params": params,
+            "own_priv": wrap_key(&kek2, &ra.sk),
+            "profile_own": wrap_key(&kek2, &ra.pdk),
+        }),
+    );
+    let login2 = post(
+        &a,
+        &format!("{base}/api/v1/auth/login"),
+        None,
+        json!({"uid_or_handle":"zhangsan","kind":"password","input":"NewPass123a"}),
+    );
+    let sk2 = unwrap_key(&kek2, login2["own_priv"].as_str().unwrap()).unwrap();
+    assert_eq!(sk2, ra.sk.to_vec());
+
+    // set PIN, then PIN login works
+    let psalt = new_salt();
+    let (pkek, _) = derive_keys("246810", &psalt, &params).unwrap();
+    post(
+        &a,
+        &format!("{base}/api/v1/me/pin"),
+        Some(&ra.token),
+        json!({
+            "password_input": "NewPass123a",
+            "pin": "246810",
+            "pin_salt": psalt,
+            "pin_params": params,
+            "pin_own": wrap_key(&pkek, &ra.sk),
+            "profile_pin": wrap_key(&pkek, &ra.pdk),
+        }),
+    );
+    let pin_login = post(
+        &a,
+        &format!("{base}/api/v1/auth/login"),
+        None,
+        json!({"uid_or_handle":"zhangsan","kind":"pin","input":"246810"}),
+    );
+    assert!(pin_login["token"].as_str().is_some());
+
+    // switch to password-only, PIN login is rejected
+    post(
+        &a,
+        &format!("{base}/api/v1/me/login-policy"),
+        Some(&ra.token),
+        json!({"password_input": "NewPass123a", "policy": "password_only"}),
+    );
+    let (code, _) = call_status(
+        &a,
+        "POST",
+        &format!("{base}/api/v1/auth/login"),
+        None,
+        Some(json!({"uid_or_handle":"zhangsan","kind":"pin","input":"246810"})),
+    );
+    assert!(code == 401 || code == 403, "pin login should fail, got {code}");
+
+    // blocks stop direct messages in both directions
+    let mut dek_arr = [0u8; 32];
+    dek_arr.copy_from_slice(&dek_raw);
+    post(&a, &format!("{base}/api/v1/blocks"), Some(&rb.token), json!({"uid": ra.uid}));
+    let ct2 = b64e(&aead_encrypt(&dek_arr, b"blocked", conv_id.to_string().as_bytes()));
+    let (code, _) = call_status(
+        &a,
+        "POST",
+        &format!("{base}/api/v1/conversations/{conv_id}/messages"),
+        Some(&ra.token),
+        Some(json!({"key_version":1,"ciphertext":ct2,"client_msg_id":uuid()})),
+    );
+    assert_eq!(code, 403);
+    call(&a, "DELETE", &format!("{base}/api/v1/blocks/{}", ra.uid), Some(&rb.token), None);
+    let ct3 = b64e(&aead_encrypt(&dek_arr, b"unblocked", conv_id.to_string().as_bytes()));
+    post(
+        &a,
+        &format!("{base}/api/v1/conversations/{conv_id}/messages"),
+        Some(&ra.token),
+        json!({"key_version":1,"ciphertext":ct3,"client_msg_id":uuid()}),
+    );
+    let blocks = get(&a, &format!("{base}/api/v1/blocks"), Some(&rb.token));
+    assert!(blocks.as_array().unwrap().is_empty());
+
+    // delete friend removes both directions
+    call(&a, "DELETE", &format!("{base}/api/v1/friends/{}", ra.uid), Some(&rb.token), None);
+    let friends_a = get(&a, &format!("{base}/api/v1/friends"), Some(&ra.token));
+    assert!(friends_a.as_array().unwrap().is_empty());
 
     // stats
     let stats = get(&a, &format!("{base}/api/v1/admin/stats"), Some(&root_token));

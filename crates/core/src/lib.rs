@@ -301,7 +301,28 @@ pub struct AccountPublic {
     pub role: String,
     pub login_policy: String,
     pub public_key: String,
+    pub avatar_file_id: Option<i64>,
     pub unread: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PublicProfile {
+    pub uid: i64,
+    pub handle: String,
+    pub display_name: String,
+    pub real_name: String,
+    pub class_id: Option<i64>,
+    pub class_name: Option<String>,
+    pub role: String,
+    pub avatar_file_id: Option<i64>,
+    pub background_file_id: Option<i64>,
+    pub signature: String,
+    pub bio: String,
+    pub gender: Option<String>,
+    pub birthday: Option<String>,
+    pub socials_json: Option<String>,
+    pub is_friend: bool,
+    pub is_blocked: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -360,6 +381,7 @@ pub struct LoginResponse {
     pub role: String,
     pub login_policy: String,
     pub public_key: String,
+    pub avatar_file_id: Option<i64>,
     pub server_time: i64,
     pub matched_offset: usize,
     pub matched_len: usize,
@@ -389,6 +411,7 @@ pub struct MeResponse {
     pub role: String,
     pub login_policy: String,
     pub public_key: String,
+    pub avatar_file_id: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -442,6 +465,7 @@ pub struct FriendDto {
     pub handle: String,
     pub display_name: String,
     pub public_key: String,
+    pub avatar_file_id: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -536,6 +560,86 @@ pub struct UpdateMeRequest {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ReadRequest {
     pub last_read: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct UpdateProfileRequest {
+    pub display_name: String,
+    pub signature: String,
+    pub bio: String,
+    pub public_gender: String,
+    pub public_birthday: String,
+    pub public_socials: String,
+    pub profile_enc: String,
+    #[serde(default)]
+    pub profile_own: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SetProfileKeyRequest {
+    pub profile_own: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ChangePasswordRequest {
+    pub old_input: String,
+    pub new_password: String,
+    pub pwd_salt: String,
+    pub pwd_params: KdfParams,
+    pub own_priv: String,
+    pub profile_own: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SetPinRequest {
+    pub password_input: String,
+    pub pin: String,
+    pub pin_salt: String,
+    pub pin_params: KdfParams,
+    pub pin_own: String,
+    pub profile_pin: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SetLoginPolicyRequest {
+    pub password_input: String,
+    pub policy: String,
+    pub pin: Option<String>,
+    pub pin_salt: Option<String>,
+    pub pin_params: Option<KdfParams>,
+    pub pin_own: Option<String>,
+    pub profile_pin: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct BlockRequest {
+    pub uid: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct AvatarRequest {
+    pub data: String,
+    #[serde(default)]
+    pub kind: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct MyProfileResponse {
+    pub uid: i64,
+    pub handle: String,
+    pub display_name: String,
+    pub real_name: String,
+    pub class_id: Option<i64>,
+    pub role: String,
+    pub login_policy: String,
+    pub avatar_file_id: Option<i64>,
+    pub background_file_id: Option<i64>,
+    pub signature: String,
+    pub bio: String,
+    pub gender: Option<String>,
+    pub birthday: Option<String>,
+    pub socials_json: Option<String>,
+    pub profile_enc: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

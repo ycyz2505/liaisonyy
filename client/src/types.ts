@@ -40,7 +40,45 @@ export interface AccountPublic {
   role: string;
   login_policy: string;
   public_key: string;
+  avatar_file_id: number | null;
   unread: number;
+}
+
+export interface PublicProfile {
+  uid: number;
+  handle: string;
+  display_name: string;
+  real_name: string;
+  class_id: number | null;
+  class_name: string | null;
+  role: string;
+  avatar_file_id: number | null;
+  background_file_id: number | null;
+  signature: string;
+  bio: string;
+  gender: string | null;
+  birthday: string | null;
+  socials_json: string | null;
+  is_friend: boolean;
+  is_blocked: boolean;
+}
+
+export interface MyProfileResponse {
+  uid: number;
+  handle: string;
+  display_name: string;
+  real_name: string;
+  class_id: number | null;
+  role: string;
+  login_policy: string;
+  avatar_file_id: number | null;
+  background_file_id: number | null;
+  signature: string;
+  bio: string;
+  gender: string | null;
+  birthday: string | null;
+  socials_json: string | null;
+  profile_enc: string;
 }
 
 export interface LoginResponse {
@@ -53,6 +91,7 @@ export interface LoginResponse {
   role: string;
   login_policy: string;
   public_key: string;
+  avatar_file_id: number | null;
   server_time: number;
   matched_offset: number;
   matched_len: number;
@@ -113,6 +152,7 @@ export interface FriendDto {
   handle: string;
   display_name: string;
   public_key: string;
+  avatar_file_id: number | null;
 }
 
 export interface AdminStats {
@@ -180,7 +220,33 @@ export type Cmd =
   | { type: "AssignAdmin"; data: { class_id: number; uid: number } }
   | { type: "CreateResetKey"; data: { uid: number; expires_minutes: number } }
   | { type: "Reset"; data: { key: string; code: string; new_password: string; new_pin: string | null } }
-  | { type: "UpdateMe"; data: { display_name: string } };
+  | { type: "UpdateMe"; data: { display_name: string } }
+  | { type: "GetMyProfile" }
+  | {
+      type: "UpdateProfile";
+      data: {
+        display_name: string;
+        signature: string;
+        bio: string;
+        gender: string;
+        birthday: string;
+        socials: string;
+        public_gender: string;
+        public_birthday: string;
+        public_socials: string;
+      };
+    }
+  | { type: "UploadImage"; data: { data: string; kind: string } }
+  | { type: "ChangePassword"; data: { old_input: string; new_password: string } }
+  | { type: "SetPin"; data: { password_input: string; pin: string } }
+  | { type: "SetLoginPolicy"; data: { password_input: string; policy: string; pin: string | null } }
+  | { type: "LookupUser"; data: { query: string } }
+  | { type: "GetUserProfile"; data: { uid: number } }
+  | { type: "DeleteFriend"; data: { uid: number } }
+  | { type: "BlockUser"; data: { uid: number } }
+  | { type: "UnblockUser"; data: { uid: number } }
+  | { type: "ListBlocks" }
+  | { type: "FetchFile"; data: { id: number } };
 
 export type Ev =
   | { type: "Bootstrap"; data: BootstrapResponse }
@@ -199,6 +265,18 @@ export type Ev =
   | { type: "AdminClasses"; data: ClassInfo[] }
   | { type: "ResetKey"; data: { code: string; expires_at: number } }
   | { type: "ResetDone" }
+  | { type: "MyProfile"; data: MyProfileResponse }
+  | { type: "MyProfilePrivate"; data: Record<string, unknown> }
+  | { type: "UserProfile"; data: PublicProfile }
+  | { type: "Blocks"; data: PublicProfile[] }
+  | { type: "ImageUploaded"; data: { kind: string; file_id: number } }
+  | { type: "FileData"; data: { id: number; mime: string; data: string } }
+  | { type: "FriendDeleted"; data: { uid: number } }
+  | { type: "Blocked"; data: { uid: number } }
+  | { type: "Unblocked"; data: { uid: number } }
+  | { type: "PasswordChanged" }
+  | { type: "PinChanged" }
+  | { type: "LoginPolicyChanged"; data: { policy: string } }
   | { type: "Toast"; data: string }
   | { type: "Error"; data: string }
   | { type: "Offline"; data: boolean };

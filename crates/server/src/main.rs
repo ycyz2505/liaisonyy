@@ -1,8 +1,9 @@
 use axum::{
+    body::Body,
     extract::{Path, Query, State},
     http::{header, HeaderMap, StatusCode},
     response::{Html, IntoResponse, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
     Json, Router,
 };
 use liaisonyy_core::*;
@@ -24,6 +25,7 @@ struct AppState {
     db: Arc<Mutex<Connection>>,
     data: PathBuf,
     hmac: Arc<Vec<u8>>,
+    media_key: Arc<[u8; 32]>,
     setup_token: Arc<Mutex<String>>,
     version: Arc<String>,
 }
@@ -92,6 +94,11 @@ impl From<serde_json::Error> for AppError {
 }
 impl From<anyhow::Error> for AppError {
     fn from(e: anyhow::Error) -> Self {
+        Self::internal(e.to_string())
+    }
+}
+impl From<std::io::Error> for AppError {
+    fn from(e: std::io::Error) -> Self {
         Self::internal(e.to_string())
     }
 }
@@ -253,8 +260,8 @@ fn build_login_response(
     matched_len: usize,
     token: String,
 ) -> rusqlite::Result<LoginResponse> {
-    let (handle, display_name, real_name, class_id, role, login_policy, public_key) = conn.query_row(
-        "SELECT handle_display,display_name,real_name,class_id,role,login_policy,public_key FROM users WHERE uid=?1",
+    let (handle, display_name, real_name, class_id, role, login_policy, public_key, avatar_file_id) = conn.query_row(
+        "SELECT handle_display,display_name,real_name,class_id,role,login_policy,public_key,avatar_file_id FROM users WHERE uid=?1",
         params![uid],
         |r| {
             Ok((
@@ -265,6 +272,7 @@ fn build_login_response(
                 r.get::<_, String>(4)?,
                 r.get::<_, String>(5)?,
                 r.get::<_, String>(6)?,
+                r.get::<_, Option<i64>>(7)?,
             ))
         },
     )?;
@@ -320,6 +328,7 @@ fn build_login_response(
         role,
         login_policy,
         public_key,
+        avatar_file_id,
         server_time: now(),
         matched_offset,
         matched_len,
@@ -696,7 +705,7 @@ async fn list_roster(State(state): State<AppState>, Path(class_id): Path<i64>) -
 async fn list_accounts(State(state): State<AppState>, Path(class_id): Path<i64>) -> ApiResult<Json<Vec<AccountPublic>>> {
     let conn = state.db.lock().unwrap();
     let mut stmt = conn.prepare(
-        "SELECT uid,handle_display,display_name,class_id,role,login_policy,public_key FROM users WHERE class_id=?1 AND status='active' ORDER BY uid",
+        "SELECT uid,handle_display,display_name,class_id,role,login_policy,public_key,avatar_file_id FROM users WHERE class_id=?1 AND status='active' ORDER BY uid",
     )?;
     let rows = stmt.query_map(params![class_id], |r| {
         Ok((
@@ -707,17 +716,18 @@ async fn list_accounts(State(state): State<AppState>, Path(class_id): Path<i64>)
             r.get::<_, String>(4)?,
             r.get::<_, String>(5)?,
             r.get::<_, String>(6)?,
+            r.get::<_, Option<i64>>(7)?,
         ))
     })?;
     let mut out = Vec::new();
     for row in rows {
-        let (uid, handle, display_name, class_id, role, login_policy, public_key) = row?;
+        let (uid, handle, display_name, class_id, role, login_policy, public_key, avatar_file_id) = row?;
         let unread: i64 = conn.query_row(
             "SELECT COALESCE(SUM((SELECT COUNT(*) FROM messages m WHERE m.conv_id=cm.conv_id AND m.id>cm.last_read AND m.sender_uid!=?1)),0) FROM conversation_members cm WHERE cm.uid=?1",
             params![uid],
             |r| r.get(0),
         )?;
-        out.push(AccountPublic { uid, handle, display_name, class_id, role, login_policy, public_key, unread });
+        out.push(AccountPublic { uid, handle, display_name, class_id, role, login_policy, public_key, avatar_file_id, unread });
     }
     Ok(Json(out))
 }
@@ -725,12 +735,12 @@ async fn list_accounts(State(state): State<AppState>, Path(class_id): Path<i64>)
 async fn me(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<Json<MeResponse>> {
     let a = auth(&state, &headers)?;
     let conn = state.db.lock().unwrap();
-    let (handle, display_name, real_name, class_id, role, login_policy, public_key) = conn.query_row(
-        "SELECT handle_display,display_name,real_name,class_id,role,login_policy,public_key FROM users WHERE uid=?1",
+    let (handle, display_name, real_name, class_id, role, login_policy, public_key, avatar_file_id) = conn.query_row(
+        "SELECT handle_display,display_name,real_name,class_id,role,login_policy,public_key,avatar_file_id FROM users WHERE uid=?1",
         params![a.uid],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)),
     )?;
-    Ok(Json(MeResponse { uid: a.uid, handle, display_name, real_name, class_id, role, login_policy, public_key }))
+    Ok(Json(MeResponse { uid: a.uid, handle, display_name, real_name, class_id, role, login_policy, public_key, avatar_file_id }))
 }
 
 async fn update_me(State(state): State<AppState>, headers: HeaderMap, Json(req): Json<UpdateMeRequest>) -> ApiResult<Json<Value>> {
@@ -752,12 +762,506 @@ async fn update_me(State(state): State<AppState>, headers: HeaderMap, Json(req):
 
 async fn get_user(State(state): State<AppState>, Path(uid): Path<i64>) -> ApiResult<Json<AccountPublic>> {
     let conn = state.db.lock().unwrap();
-    let (handle, display_name, class_id, role, login_policy, public_key) = conn.query_row(
-        "SELECT handle_display,display_name,class_id,role,login_policy,public_key FROM users WHERE uid=?1",
+    let (handle, display_name, class_id, role, login_policy, public_key, avatar_file_id) = conn.query_row(
+        "SELECT handle_display,display_name,class_id,role,login_policy,public_key,avatar_file_id FROM users WHERE uid=?1",
         params![uid],
-        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<i64>>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?, r.get::<_, String>(5)?)),
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<i64>>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?, r.get::<_, String>(5)?, r.get::<_, Option<i64>>(6)?)),
     ).optional()?.ok_or_else(|| AppError::not_found("用户不存在"))?;
-    Ok(Json(AccountPublic { uid, handle, display_name, class_id: class_id.unwrap_or(0), role, login_policy, public_key, unread: 0 }))
+    Ok(Json(AccountPublic { uid, handle, display_name, class_id: class_id.unwrap_or(0), role, login_policy, public_key, avatar_file_id, unread: 0 }))
+}
+
+fn validate_kdf(p: &KdfParams) -> ApiResult<()> {
+    if !(8192..=1_048_576).contains(&p.m) || !(1..=10).contains(&p.t) || !(1..=8).contains(&p.p) {
+        return Err(AppError::bad("KDF 参数不正确"));
+    }
+    Ok(())
+}
+
+fn verify_password(conn: &Connection, uid: i64, input: &str) -> ApiResult<()> {
+    let (salt, m, t, p, verify, len): (String, u32, u32, u32, String, i64) = conn.query_row(
+        "SELECT pwd_salt,pwd_m,pwd_t,pwd_p,pwd_verify,pwd_len FROM credentials WHERE uid=?1",
+        params![uid],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+    )?;
+    let kdf = KdfParams { m, t, p };
+    if match_secret(input, len as usize, &salt, &kdf, &verify).is_none() {
+        return Err(AppError::unauthorized("密码错误"));
+    }
+    Ok(())
+}
+
+fn revoke_other_sessions(conn: &Connection, hmac_key: &[u8], uid: i64, headers: &HeaderMap) -> ApiResult<()> {
+    let token = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+        .ok_or_else(|| AppError::unauthorized("缺少登录令牌"))?;
+    let cur = hmac_sha256_b64(hmac_key, token.as_bytes());
+    conn.execute(
+        "UPDATE sessions SET revoked=1 WHERE uid=?1 AND token_hmac<>?2",
+        params![uid, cur],
+    )?;
+    Ok(())
+}
+
+fn public_profile(conn: &Connection, viewer: i64, target: i64) -> ApiResult<Option<PublicProfile>> {
+    let row = conn
+        .query_row(
+            "SELECT u.uid,u.handle_display,u.display_name,u.real_name,u.class_id,c.name,u.role,u.avatar_file_id,
+                    p.background_file_id,COALESCE(p.signature,''),COALESCE(p.bio,''),p.gender,p.birthday,p.socials_json
+             FROM users u LEFT JOIN classes c ON c.id=u.class_id LEFT JOIN public_profiles p ON p.uid=u.uid
+             WHERE u.uid=?1 AND u.status='active'",
+            params![target],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, Option<i64>>(4)?,
+                    r.get::<_, Option<String>>(5)?,
+                    r.get::<_, String>(6)?,
+                    r.get::<_, Option<i64>>(7)?,
+                    r.get::<_, Option<i64>>(8)?,
+                    r.get::<_, String>(9)?,
+                    r.get::<_, String>(10)?,
+                    r.get::<_, Option<String>>(11)?,
+                    r.get::<_, Option<String>>(12)?,
+                    r.get::<_, Option<String>>(13)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((uid, handle, display_name, real_name, class_id, class_name, role, avatar_file_id, background_file_id, signature, bio, gender, birthday, socials_json)) = row else {
+        return Ok(None);
+    };
+    let is_friend = viewer != target
+        && conn.query_row(
+            "SELECT COUNT(*) FROM friends WHERE uid=?1 AND friend_uid=?2",
+            params![viewer, target],
+            |r| r.get::<_, i64>(0),
+        )? > 0;
+    let is_blocked = viewer != target
+        && conn.query_row(
+            "SELECT COUNT(*) FROM blocks WHERE uid=?1 AND blocked_uid=?2",
+            params![viewer, target],
+            |r| r.get::<_, i64>(0),
+        )? > 0;
+    Ok(Some(PublicProfile {
+        uid,
+        handle,
+        display_name,
+        real_name,
+        class_id,
+        class_name,
+        role,
+        avatar_file_id,
+        background_file_id,
+        signature,
+        bio,
+        gender,
+        birthday,
+        socials_json,
+        is_friend,
+        is_blocked,
+    }))
+}
+
+async fn get_my_profile(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<Json<MyProfileResponse>> {
+    let a = auth(&state, &headers)?;
+    let conn = state.db.lock().unwrap();
+    let row = conn.query_row(
+        "SELECT u.uid,u.handle_display,u.display_name,u.real_name,u.class_id,u.role,u.login_policy,u.avatar_file_id,
+                p.background_file_id,COALESCE(p.signature,''),COALESCE(p.bio,''),p.gender,p.birthday,p.socials_json,
+                COALESCE(pe.ciphertext,'')
+         FROM users u LEFT JOIN public_profiles p ON p.uid=u.uid LEFT JOIN profiles_enc pe ON pe.uid=u.uid
+         WHERE u.uid=?1",
+        params![a.uid],
+        |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, Option<i64>>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, String>(6)?,
+                r.get::<_, Option<i64>>(7)?,
+                r.get::<_, Option<i64>>(8)?,
+                r.get::<_, String>(9)?,
+                r.get::<_, String>(10)?,
+                r.get::<_, Option<String>>(11)?,
+                r.get::<_, Option<String>>(12)?,
+                r.get::<_, Option<String>>(13)?,
+                r.get::<_, String>(14)?,
+            ))
+        },
+    )?;
+    Ok(Json(MyProfileResponse {
+        uid: row.0,
+        handle: row.1,
+        display_name: row.2,
+        real_name: row.3,
+        class_id: row.4,
+        role: row.5,
+        login_policy: row.6,
+        avatar_file_id: row.7,
+        background_file_id: row.8,
+        signature: row.9,
+        bio: row.10,
+        gender: row.11,
+        birthday: row.12,
+        socials_json: row.13,
+        profile_enc: row.14,
+    }))
+}
+
+async fn update_profile(State(state): State<AppState>, headers: HeaderMap, Json(req): Json<UpdateProfileRequest>) -> ApiResult<Json<Value>> {
+    let a = auth(&state, &headers)?;
+    let name = req.display_name.trim();
+    let n = name.chars().count();
+    if !(1..=20).contains(&n) {
+        return Err(AppError::bad("用户名需 1-20 字"));
+    }
+    if req.signature.chars().count() > 100 {
+        return Err(AppError::bad("个性签名最多 100 字"));
+    }
+    if req.bio.chars().count() > 1000 {
+        return Err(AppError::bad("个人简介最多 1000 字"));
+    }
+    if req.public_socials.len() > 2000 {
+        return Err(AppError::bad("社交账号信息过长"));
+    }
+    if req.profile_enc.len() > 65536 {
+        return Err(AppError::bad("资料数据过大"));
+    }
+    let gender = if req.public_gender.trim().is_empty() { None } else { Some(req.public_gender.trim().to_string()) };
+    let birthday = if req.public_birthday.trim().is_empty() { None } else { Some(req.public_birthday.trim().to_string()) };
+    let socials = if req.public_socials.trim().is_empty() { None } else { Some(req.public_socials) };
+    let conn = state.db.lock().unwrap();
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("UPDATE users SET display_name=?1 WHERE uid=?2", params![name, a.uid])?;
+    tx.execute(
+        "INSERT INTO public_profiles (uid,signature,bio,gender,birthday,socials_json) VALUES (?1,?2,?3,?4,?5,?6)
+         ON CONFLICT(uid) DO UPDATE SET signature=excluded.signature,bio=excluded.bio,gender=excluded.gender,birthday=excluded.birthday,socials_json=excluded.socials_json",
+        params![a.uid, req.signature, req.bio, gender, birthday, socials],
+    )?;
+    tx.execute("UPDATE profiles_enc SET ciphertext=?1 WHERE uid=?2", params![req.profile_enc, a.uid])?;
+    if let Some(w) = req.profile_own.filter(|s| !s.is_empty()) {
+        if w.len() > 4096 {
+            return Err(AppError::bad("资料密钥过长"));
+        }
+        tx.execute("UPDATE profiles_enc SET profile_own=?1 WHERE uid=?2", params![w, a.uid])?;
+    }
+    audit(&tx, &state.hmac, Some(a.uid), "account.profile.update", Some("uid"), Some(&a.uid.to_string()), None)?;
+    tx.commit()?;
+    Ok(Json(json!({"ok":true})))
+}
+
+async fn set_profile_key(State(state): State<AppState>, headers: HeaderMap, Json(req): Json<SetProfileKeyRequest>) -> ApiResult<Json<Value>> {
+    let a = auth(&state, &headers)?;
+    if req.profile_own.is_empty() || req.profile_own.len() > 4096 {
+        return Err(AppError::bad("资料密钥格式不正确"));
+    }
+    let conn = state.db.lock().unwrap();
+    conn.execute("UPDATE profiles_enc SET profile_own=?1 WHERE uid=?2", params![req.profile_own, a.uid])?;
+    audit(&conn, &state.hmac, Some(a.uid), "account.profile.key", Some("uid"), Some(&a.uid.to_string()), None)?;
+    Ok(Json(json!({"ok":true})))
+}
+
+async fn get_user_profile(State(state): State<AppState>, headers: HeaderMap, Path(uid): Path<i64>) -> ApiResult<Json<PublicProfile>> {
+    let a = auth(&state, &headers)?;
+    let conn = state.db.lock().unwrap();
+    let p = public_profile(&conn, a.uid, uid)?.ok_or_else(|| AppError::not_found("用户不存在"))?;
+    Ok(Json(p))
+}
+
+async fn lookup_user(State(state): State<AppState>, headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> ApiResult<Json<PublicProfile>> {
+    let a = auth(&state, &headers)?;
+    let key = q.get("q").map(|s| s.trim()).unwrap_or("");
+    if key.is_empty() {
+        return Err(AppError::bad("请输入 YY 号或 UID"));
+    }
+    let conn = state.db.lock().unwrap();
+    let uid: Option<i64> = if key.chars().all(|c| c.is_ascii_digit()) {
+        conn.query_row(
+            "SELECT uid FROM users WHERE uid=?1 AND status='active'",
+            params![key.parse::<i64>().unwrap_or(-1)],
+            |r| r.get(0),
+        )
+        .optional()?
+    } else {
+        conn.query_row(
+            "SELECT uid FROM users WHERE handle_lower=?1 AND status='active'",
+            params![key.to_lowercase()],
+            |r| r.get(0),
+        )
+        .optional()?
+    };
+    let uid = uid.ok_or_else(|| AppError::not_found("未找到该用户"))?;
+    let p = public_profile(&conn, a.uid, uid)?.ok_or_else(|| AppError::not_found("未找到该用户"))?;
+    Ok(Json(p))
+}
+
+async fn upload_avatar(State(state): State<AppState>, headers: HeaderMap, Json(req): Json<AvatarRequest>) -> ApiResult<Json<Value>> {
+    let a = auth(&state, &headers)?;
+    let kind = req.kind.as_deref().unwrap_or("avatar");
+    if kind != "avatar" && kind != "background" {
+        return Err(AppError::bad("未知的图片类型"));
+    }
+    let raw = req.data.split(',').last().unwrap_or(&req.data).trim();
+    let bytes = b64d(raw).map_err(|_| AppError::bad("图片数据无效"))?;
+    if bytes.len() > 8 * 1024 * 1024 {
+        return Err(AppError::bad("图片过大（最大 8 MB）"));
+    }
+    let img = image::load_from_memory(&bytes).map_err(|_| AppError::bad("图片格式不支持"))?;
+    let (w, h) = if kind == "background" { (1280u32, 720u32) } else { (256u32, 256u32) };
+    let img = img.resize_to_fill(w, h, image::imageops::FilterType::Triangle);
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut cursor, image::ImageFormat::Png)
+        .map_err(|e| AppError::bad(format!("图片处理失败: {e}")))?;
+    let png = cursor.into_inner();
+    if png.len() > 4 * 1024 * 1024 {
+        return Err(AppError::bad("图片处理结果过大"));
+    }
+    let sha = sha256_b64(&png);
+    let enc = aead_encrypt(state.media_key.as_ref(), &png, b"liaisonyy-media-v1");
+    let fname = format!("{}.png", uuid());
+    let media_dir = state.data.join("media");
+    std::fs::create_dir_all(&media_dir)?;
+    std::fs::write(media_dir.join(&fname), &enc)?;
+    let conn = state.db.lock().unwrap();
+    let old: Option<i64> = conn
+        .query_row(
+            "SELECT CASE WHEN ?2='background' THEN p.background_file_id ELSE u.avatar_file_id END
+             FROM users u LEFT JOIN public_profiles p ON p.uid=u.uid WHERE u.uid=?1",
+            params![a.uid, kind],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "INSERT INTO files (owner_uid,sha256,size,mime,path,created_at) VALUES (?1,?2,?3,'image/png',?4,?5)",
+        params![a.uid, sha, png.len() as i64, fname, now()],
+    )?;
+    let file_id = tx.last_insert_rowid();
+    if kind == "background" {
+        tx.execute(
+            "INSERT INTO public_profiles (uid,background_file_id) VALUES (?1,?2)
+             ON CONFLICT(uid) DO UPDATE SET background_file_id=excluded.background_file_id",
+            params![a.uid, file_id],
+        )?;
+    } else {
+        tx.execute("UPDATE users SET avatar_file_id=?1 WHERE uid=?2", params![file_id, a.uid])?;
+        tx.execute(
+            "INSERT INTO public_profiles (uid,avatar_file_id) VALUES (?1,?2)
+             ON CONFLICT(uid) DO UPDATE SET avatar_file_id=excluded.avatar_file_id",
+            params![a.uid, file_id],
+        )?;
+    }
+    audit(&tx, &state.hmac, Some(a.uid), if kind == "background" { "account.background.update" } else { "account.avatar.update" }, Some("uid"), Some(&a.uid.to_string()), None)?;
+    tx.commit()?;
+    if let Some(old_id) = old {
+        if old_id != file_id {
+            if let Ok(path) = conn.query_row("SELECT path FROM files WHERE id=?1", params![old_id], |r| r.get::<_, String>(0)) {
+                let _ = std::fs::remove_file(media_dir.join(path));
+                let _ = conn.execute("DELETE FROM files WHERE id=?1", params![old_id]);
+            }
+        }
+    }
+    Ok(Json(json!({"file_id": file_id})))
+}
+
+async fn get_file(State(state): State<AppState>, Path(id): Path<i64>) -> ApiResult<Response> {
+    let (path, mime): (String, String) = {
+        let conn = state.db.lock().unwrap();
+        conn.query_row("SELECT path,mime FROM files WHERE id=?1", params![id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()?
+            .ok_or_else(|| AppError::not_found("文件不存在"))?
+    };
+    if path.len() > 64 || !path.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-') {
+        return Err(AppError::not_found("文件不存在"));
+    }
+    let enc = std::fs::read(state.data.join("media").join(&path)).map_err(|_| AppError::not_found("文件不存在"))?;
+    let plain = aead_decrypt(state.media_key.as_ref(), &enc, b"liaisonyy-media-v1")?;
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, mime)
+        .header(header::CACHE_CONTROL, "public, max-age=86400")
+        .header("X-Content-Type-Options", "nosniff")
+        .body(Body::from(plain))
+        .map_err(|e| AppError::internal(e.to_string()))
+}
+
+async fn change_password(State(state): State<AppState>, headers: HeaderMap, Json(req): Json<ChangePasswordRequest>) -> ApiResult<Json<Value>> {
+    let a = auth(&state, &headers)?;
+    validate_password(&req.new_password)?;
+    validate_kdf(&req.pwd_params)?;
+    let conn = state.db.lock().unwrap();
+    verify_password(&conn, a.uid, &req.old_input)?;
+    let (kek, new_verify) = derive_keys(&req.new_password, &req.pwd_salt, &req.pwd_params)
+        .map_err(|_| AppError::bad("密码参数无效"))?;
+    if unwrap_key(&kek, &req.own_priv).is_err() || unwrap_key(&kek, &req.profile_own).is_err() {
+        return Err(AppError::bad("密钥包裹不正确"));
+    }
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "UPDATE credentials SET pwd_salt=?1,pwd_m=?2,pwd_t=?3,pwd_p=?4,pwd_verify=?5,pwd_len=?6,failed_count=0,locked_until=0 WHERE uid=?7",
+        params![
+            req.pwd_salt,
+            req.pwd_params.m,
+            req.pwd_params.t,
+            req.pwd_params.p,
+            b64e(&new_verify),
+            req.new_password.chars().count() as i64,
+            a.uid
+        ],
+    )?;
+    tx.execute("UPDATE user_keys SET own_priv=?1 WHERE uid=?2", params![req.own_priv, a.uid])?;
+    tx.execute("UPDATE profiles_enc SET profile_own=?1 WHERE uid=?2", params![req.profile_own, a.uid])?;
+    revoke_other_sessions(&tx, &state.hmac, a.uid, &headers)?;
+    audit(&tx, &state.hmac, Some(a.uid), "account.password.change", Some("uid"), Some(&a.uid.to_string()), None)?;
+    tx.commit()?;
+    Ok(Json(json!({"ok":true})))
+}
+
+async fn set_pin(State(state): State<AppState>, headers: HeaderMap, Json(req): Json<SetPinRequest>) -> ApiResult<Json<Value>> {
+    let a = auth(&state, &headers)?;
+    validate_pin(&req.pin)?;
+    validate_kdf(&req.pin_params)?;
+    let conn = state.db.lock().unwrap();
+    verify_password(&conn, a.uid, &req.password_input)?;
+    let (kek, pin_verify) = derive_keys(&req.pin, &req.pin_salt, &req.pin_params)
+        .map_err(|_| AppError::bad("PIN 参数无效"))?;
+    if unwrap_key(&kek, &req.pin_own).is_err() || unwrap_key(&kek, &req.profile_pin).is_err() {
+        return Err(AppError::bad("密钥包裹不正确"));
+    }
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "UPDATE credentials SET pin_salt=?1,pin_m=?2,pin_t=?3,pin_p=?4,pin_verify=?5,pin_len=?6 WHERE uid=?7",
+        params![
+            req.pin_salt,
+            req.pin_params.m,
+            req.pin_params.t,
+            req.pin_params.p,
+            b64e(&pin_verify),
+            req.pin.chars().count() as i64,
+            a.uid
+        ],
+    )?;
+    tx.execute("UPDATE user_keys SET pin_own=?1 WHERE uid=?2", params![req.pin_own, a.uid])?;
+    tx.execute("UPDATE profiles_enc SET profile_pin=?1 WHERE uid=?2", params![req.profile_pin, a.uid])?;
+    tx.execute("UPDATE users SET login_policy='pin_allowed' WHERE uid=?1", params![a.uid])?;
+    revoke_other_sessions(&tx, &state.hmac, a.uid, &headers)?;
+    audit(&tx, &state.hmac, Some(a.uid), "account.pin.set", Some("uid"), Some(&a.uid.to_string()), None)?;
+    tx.commit()?;
+    Ok(Json(json!({"ok":true})))
+}
+
+async fn set_login_policy(State(state): State<AppState>, headers: HeaderMap, Json(req): Json<SetLoginPolicyRequest>) -> ApiResult<Json<Value>> {
+    let a = auth(&state, &headers)?;
+    let conn = state.db.lock().unwrap();
+    verify_password(&conn, a.uid, &req.password_input)?;
+    match req.policy.as_str() {
+        "pin_allowed" => {
+            let pin = req.pin.as_deref().ok_or_else(|| AppError::bad("请设置 PIN"))?;
+            validate_pin(pin)?;
+            let params = req.pin_params.as_ref().ok_or_else(|| AppError::bad("PIN 参数缺失"))?;
+            validate_kdf(params)?;
+            let salt = req.pin_salt.as_deref().ok_or_else(|| AppError::bad("PIN 参数缺失"))?;
+            let pin_own = req.pin_own.as_deref().ok_or_else(|| AppError::bad("PIN 密钥缺失"))?;
+            let profile_pin = req.profile_pin.as_deref().ok_or_else(|| AppError::bad("PIN 密钥缺失"))?;
+            let (kek, pin_verify) = derive_keys(pin, salt, params).map_err(|_| AppError::bad("PIN 参数无效"))?;
+            if unwrap_key(&kek, pin_own).is_err() || unwrap_key(&kek, profile_pin).is_err() {
+                return Err(AppError::bad("密钥包裹不正确"));
+            }
+            let tx = conn.unchecked_transaction()?;
+            tx.execute(
+                "UPDATE credentials SET pin_salt=?1,pin_m=?2,pin_t=?3,pin_p=?4,pin_verify=?5,pin_len=?6 WHERE uid=?7",
+                params![salt, params.m, params.t, params.p, b64e(&pin_verify), pin.chars().count() as i64, a.uid],
+            )?;
+            tx.execute("UPDATE user_keys SET pin_own=?1 WHERE uid=?2", params![pin_own, a.uid])?;
+            tx.execute("UPDATE profiles_enc SET profile_pin=?1 WHERE uid=?2", params![profile_pin, a.uid])?;
+            tx.execute("UPDATE users SET login_policy='pin_allowed' WHERE uid=?1", params![a.uid])?;
+            revoke_other_sessions(&tx, &state.hmac, a.uid, &headers)?;
+            audit(&tx, &state.hmac, Some(a.uid), "account.login_policy", Some("uid"), Some(&a.uid.to_string()), Some("pin_allowed"))?;
+            tx.commit()?;
+        }
+        "password_only" => {
+            let tx = conn.unchecked_transaction()?;
+            tx.execute(
+                "UPDATE credentials SET pin_salt=NULL,pin_m=NULL,pin_t=NULL,pin_p=NULL,pin_verify=NULL,pin_len=NULL WHERE uid=?1",
+                params![a.uid],
+            )?;
+            tx.execute("UPDATE user_keys SET pin_own=NULL WHERE uid=?1", params![a.uid])?;
+            tx.execute("UPDATE profiles_enc SET profile_pin=NULL WHERE uid=?1", params![a.uid])?;
+            tx.execute("UPDATE users SET login_policy='password_only' WHERE uid=?1", params![a.uid])?;
+            revoke_other_sessions(&tx, &state.hmac, a.uid, &headers)?;
+            audit(&tx, &state.hmac, Some(a.uid), "account.login_policy", Some("uid"), Some(&a.uid.to_string()), Some("password_only"))?;
+            tx.commit()?;
+        }
+        _ => return Err(AppError::bad("未知的登录方式")),
+    }
+    Ok(Json(json!({"ok":true})))
+}
+
+async fn delete_friend(State(state): State<AppState>, headers: HeaderMap, Path(uid): Path<i64>) -> ApiResult<Json<Value>> {
+    let a = auth(&state, &headers)?;
+    let conn = state.db.lock().unwrap();
+    let n = conn.execute(
+        "DELETE FROM friends WHERE (uid=?1 AND friend_uid=?2) OR (uid=?2 AND friend_uid=?1)",
+        params![a.uid, uid],
+    )?;
+    if n == 0 {
+        return Err(AppError::not_found("不是好友"));
+    }
+    audit(&conn, &state.hmac, Some(a.uid), "friend.delete", Some("uid"), Some(&uid.to_string()), None)?;
+    Ok(Json(json!({"ok":true})))
+}
+
+async fn block_user(State(state): State<AppState>, headers: HeaderMap, Json(req): Json<BlockRequest>) -> ApiResult<Json<Value>> {
+    let a = auth(&state, &headers)?;
+    if req.uid == a.uid {
+        return Err(AppError::bad("不能拉黑自己"));
+    }
+    let conn = state.db.lock().unwrap();
+    let exists: Option<i64> = conn
+        .query_row("SELECT uid FROM users WHERE uid=?1 AND status='active'", params![req.uid], |r| r.get(0))
+        .optional()?;
+    if exists.is_none() {
+        return Err(AppError::not_found("用户不存在"));
+    }
+    conn.execute(
+        "INSERT OR IGNORE INTO blocks (uid,blocked_uid,created_at) VALUES (?1,?2,?3)",
+        params![a.uid, req.uid, now()],
+    )?;
+    audit(&conn, &state.hmac, Some(a.uid), "user.block", Some("uid"), Some(&req.uid.to_string()), None)?;
+    Ok(Json(json!({"ok":true})))
+}
+
+async fn unblock_user(State(state): State<AppState>, headers: HeaderMap, Path(uid): Path<i64>) -> ApiResult<Json<Value>> {
+    let a = auth(&state, &headers)?;
+    let conn = state.db.lock().unwrap();
+    conn.execute("DELETE FROM blocks WHERE uid=?1 AND blocked_uid=?2", params![a.uid, uid])?;
+    audit(&conn, &state.hmac, Some(a.uid), "user.unblock", Some("uid"), Some(&uid.to_string()), None)?;
+    Ok(Json(json!({"ok":true})))
+}
+
+async fn list_blocks(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<Json<Vec<PublicProfile>>> {
+    let a = auth(&state, &headers)?;
+    let conn = state.db.lock().unwrap();
+    let mut stmt = conn.prepare("SELECT blocked_uid FROM blocks WHERE uid=?1 ORDER BY created_at DESC")?;
+    let uids = stmt
+        .query_map(params![a.uid], |r| r.get::<_, i64>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut out = Vec::new();
+    for uid in uids {
+        if let Some(p) = public_profile(&conn, a.uid, uid)? {
+            out.push(p);
+        }
+    }
+    Ok(Json(out))
 }
 
 async fn create_request(State(state): State<AppState>, headers: HeaderMap, Json(req): Json<FriendRequestCreate>) -> ApiResult<Json<Value>> {
@@ -769,6 +1273,14 @@ async fn create_request(State(state): State<AppState>, headers: HeaderMap, Json(
     let target: Option<i64> = conn.query_row("SELECT uid FROM users WHERE uid=?1 AND status='active'", params![req.to_uid], |r| r.get(0)).optional()?;
     if target.is_none() {
         return Err(AppError::not_found("用户不存在"));
+    }
+    let blocked: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM blocks WHERE (uid=?1 AND blocked_uid=?2) OR (uid=?2 AND blocked_uid=?1)",
+        params![a.uid, req.to_uid],
+        |r| r.get(0),
+    )?;
+    if blocked > 0 {
+        return Err(AppError::forbidden("无法向该用户发送好友申请"));
     }
     let friend: i64 = conn.query_row(
         "SELECT COUNT(*) FROM friends WHERE uid=?1 AND friend_uid=?2",
@@ -886,10 +1398,10 @@ async fn list_friends(State(state): State<AppState>, headers: HeaderMap) -> ApiR
     let a = auth(&state, &headers)?;
     let conn = state.db.lock().unwrap();
     let mut stmt = conn.prepare(
-        "SELECT u.uid,u.handle_display,u.display_name,u.public_key FROM friends f JOIN users u ON u.uid=f.friend_uid WHERE f.uid=?1 ORDER BY u.display_name",
+        "SELECT u.uid,u.handle_display,u.display_name,u.public_key,u.avatar_file_id FROM friends f JOIN users u ON u.uid=f.friend_uid WHERE f.uid=?1 ORDER BY u.display_name",
     )?;
     let rows = stmt.query_map(params![a.uid], |r| {
-        Ok(FriendDto { uid: r.get(0)?, handle: r.get(1)?, display_name: r.get(2)?, public_key: r.get(3)? })
+        Ok(FriendDto { uid: r.get(0)?, handle: r.get(1)?, display_name: r.get(2)?, public_key: r.get(3)?, avatar_file_id: r.get(4)? })
     })?;
     let mut out = Vec::new();
     for row in rows {
@@ -999,11 +1511,30 @@ async fn send_message(State(state): State<AppState>, headers: HeaderMap, Path(co
     if member == 0 {
         return Err(AppError::forbidden("不在该会话中"));
     }
-    let _ = conn.query_row(
+    let (kind, _current): (String, i64) = conn.query_row(
         "SELECT kind,current_key_version FROM conversations WHERE id=?1",
         params![conv_id],
         |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
     )?;
+    if kind == "direct" {
+        let other: Option<i64> = conn
+            .query_row(
+                "SELECT uid FROM conversation_members WHERE conv_id=?1 AND uid<>?2 LIMIT 1",
+                params![conv_id, a.uid],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(other) = other {
+            let blocked: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM blocks WHERE (uid=?1 AND blocked_uid=?2) OR (uid=?2 AND blocked_uid=?1)",
+                params![a.uid, other],
+                |r| r.get(0),
+            )?;
+            if blocked > 0 {
+                return Err(AppError::forbidden("消息无法送达"));
+            }
+        }
+    }
     conn.execute(
         "INSERT OR IGNORE INTO messages (conv_id,sender_uid,key_version,client_msg_id,ciphertext,created_at) VALUES (?1,?2,?3,?4,?5,?6)",
         params![conv_id, a.uid, req.key_version, req.client_msg_id, req.ciphertext, now()],
@@ -1367,6 +1898,7 @@ CREATE TABLE IF NOT EXISTS users (
   status TEXT NOT NULL DEFAULT 'active',
   login_policy TEXT NOT NULL DEFAULT 'pin_allowed',
   public_key TEXT NOT NULL,
+  avatar_file_id INTEGER,
   created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS credentials (
@@ -1408,6 +1940,29 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS friends (
   uid INTEGER NOT NULL, friend_uid INTEGER NOT NULL, created_at INTEGER NOT NULL,
   PRIMARY KEY(uid, friend_uid)
+);
+CREATE TABLE IF NOT EXISTS blocks (
+  uid INTEGER NOT NULL, blocked_uid INTEGER NOT NULL, created_at INTEGER NOT NULL,
+  PRIMARY KEY(uid, blocked_uid)
+);
+CREATE TABLE IF NOT EXISTS public_profiles (
+  uid INTEGER PRIMARY KEY,
+  avatar_file_id INTEGER,
+  background_file_id INTEGER,
+  signature TEXT NOT NULL DEFAULT '',
+  bio TEXT NOT NULL DEFAULT '',
+  gender TEXT,
+  birthday TEXT,
+  socials_json TEXT
+);
+CREATE TABLE IF NOT EXISTS files (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  owner_uid INTEGER NOT NULL,
+  sha256 TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  mime TEXT NOT NULL,
+  path TEXT NOT NULL,
+  created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS friend_requests (
   id INTEGER PRIMARY KEY AUTOINCREMENT, from_uid INTEGER NOT NULL, to_uid INTEGER NOT NULL,
@@ -1452,7 +2007,34 @@ CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts);
 fn init_db(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;")?;
     conn.execute_batch(SCHEMA)?;
+    let cols = {
+        let mut stmt = conn.prepare("PRAGMA table_info(users)")?;
+        let v = stmt
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+        v
+    };
+    if !cols.iter().any(|c| c == "avatar_file_id") {
+        conn.execute("ALTER TABLE users ADD COLUMN avatar_file_id INTEGER", [])?;
+    }
     Ok(())
+}
+
+fn load_or_create_media_key(data: &FsPath) -> anyhow::Result<[u8; 32]> {
+    use rand::RngCore;
+    let p = data.join("media.key");
+    if p.exists() {
+        let bytes = std::fs::read(&p)?;
+        if bytes.len() == 32 {
+            let mut key = [0u8; 32];
+            key.copy_from_slice(&bytes);
+            return Ok(key);
+        }
+    }
+    let mut key = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut key);
+    std::fs::write(&p, key)?;
+    Ok(key)
 }
 
 fn load_or_create_keyring(data: &FsPath) -> anyhow::Result<Vec<u8>> {
@@ -1602,6 +2184,7 @@ async fn main() -> anyhow::Result<()> {
         db: Arc::new(Mutex::new(conn)),
         data: data.clone(),
         hmac: Arc::new(hmac),
+        media_key: Arc::new(load_or_create_media_key(&data)?),
         setup_token: Arc::new(Mutex::new(setup_token.clone())),
         version: Arc::new(APP_VERSION.to_string()),
     };
@@ -1618,7 +2201,19 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/classes/:id/roster", get(list_roster))
         .route("/api/v1/classes/:id/accounts", get(list_accounts))
         .route("/api/v1/me", get(me).patch(update_me))
+        .route("/api/v1/me/profile", get(get_my_profile).patch(update_profile))
+        .route("/api/v1/me/profile-key", post(set_profile_key))
+        .route("/api/v1/me/avatar", post(upload_avatar))
+        .route("/api/v1/me/password", post(change_password))
+        .route("/api/v1/me/pin", post(set_pin))
+        .route("/api/v1/me/login-policy", post(set_login_policy))
         .route("/api/v1/users/:uid", get(get_user))
+        .route("/api/v1/users/:uid/profile", get(get_user_profile))
+        .route("/api/v1/lookup/user", get(lookup_user))
+        .route("/api/v1/files/:id", get(get_file))
+        .route("/api/v1/friends/:uid", delete(delete_friend))
+        .route("/api/v1/blocks", get(list_blocks).post(block_user))
+        .route("/api/v1/blocks/:uid", delete(unblock_user))
         .route("/api/v1/friends/requests", get(list_requests).post(create_request))
         .route("/api/v1/friends/requests/:id/accept", post(accept_request))
         .route("/api/v1/friends/requests/:id/decline", post(decline_request))

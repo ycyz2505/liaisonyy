@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { send } from "../api";
-import { state } from "../store";
+import { showError, state } from "../store";
 import type { AccountPublic, FriendRequestView } from "../types";
+import Avatar from "../components/Avatar.vue";
 
 const myUid = computed(() => state.user?.uid ?? 0);
 const pending = computed(() => state.requests.filter((r) => r.status === "pending"));
@@ -16,14 +17,41 @@ function decline(r: FriendRequestView) {
 function addFriend(a: AccountPublic) {
   send({ type: "AddFriend", data: { to_uid: a.uid, message: state.friendMsg } });
 }
+function search() {
+  const q = state.lookupQuery.trim();
+  if (!q) {
+    showError("请输入 YY 号或 UID");
+    return;
+  }
+  send({ type: "LookupUser", data: { query: q } });
+}
+function openProfile(uid: number) {
+  send({ type: "GetUserProfile", data: { uid } });
+}
 </script>
 
 <template>
   <div>
+    <h3 style="margin-top: 0">找人</h3>
+    <div class="row">
+      <input
+        v-model="state.lookupQuery"
+        placeholder="输入 YY 号或 UID"
+        @keyup.enter="search"
+      />
+      <button class="fixed" @click="search">查找</button>
+    </div>
+
+    <div class="sep"></div>
     <h3 style="margin-top: 0">好友</h3>
     <div v-if="state.friends.length === 0" class="empty">还没有好友</div>
-    <div v-for="f in state.friends" :key="f.uid" class="friend-row">
-      <div class="avatar">{{ f.display_name.slice(0, 1) || "?" }}</div>
+    <div
+      v-for="f in state.friends"
+      :key="f.uid"
+      class="friend-row clickable"
+      @click="openProfile(f.uid)"
+    >
+      <Avatar :file-id="f.avatar_file_id" :name="f.display_name" />
       <div class="grow">
         <div class="account-name">{{ f.display_name }}</div>
         <div class="account-sub">@{{ f.handle }} · UID {{ f.uid }}</div>
@@ -56,10 +84,12 @@ function addFriend(a: AccountPublic) {
       :key="a.uid"
       class="friend-row"
     >
-      <div class="avatar">{{ a.display_name.slice(0, 1) || "?" }}</div>
-      <div class="grow">
-        <div class="account-name">{{ a.display_name }}</div>
-        <div class="account-sub">@{{ a.handle }} · UID {{ a.uid }}</div>
+      <div class="clickable-row" @click="openProfile(a.uid)" style="display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0">
+        <Avatar :file-id="a.avatar_file_id" :name="a.display_name" />
+        <div class="grow">
+          <div class="account-name">{{ a.display_name }}</div>
+          <div class="account-sub">@{{ a.handle }} · UID {{ a.uid }}</div>
+        </div>
       </div>
       <button class="fixed" @click="addFriend(a)">加好友</button>
     </div>

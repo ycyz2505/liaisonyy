@@ -20,6 +20,12 @@ function back() {
     <input v-model="state.serverInput" />
     <button class="primary" @click="save">保存服务器地址</button>
 
+    <template v-if="state.user">
+      <div class="sep"></div>
+      <button @click="send({ type: 'GetMyProfile' }); state.page = 'Profile'">我的资料</button>
+      <button style="margin-top: 8px" @click="state.page = 'Security'">密码与 PIN</button>
+    </template>
+
     <div class="sep"></div>
     <h3>隐私与数据说明</h3>
     <p class="small">
