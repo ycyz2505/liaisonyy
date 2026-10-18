@@ -68,6 +68,8 @@ jobs:
         run: npm ci
       - name: Build Tauri client
         working-directory: client
+        env:
+          LIAISONYY_UPDATE_PUBKEY: ${{ secrets.LIAISONYY_UPDATE_PUBKEY }}
         run: npm run build:tauri
       - name: Collect client artifacts
         shell: pwsh

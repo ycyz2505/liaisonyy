@@ -3132,8 +3132,8 @@ async fn admin_upload_update(State(state): State<AppState>, headers: HeaderMap, 
         return Err(AppError::bad("版本号格式不正确"));
     }
     let bytes = b64d(&req.data).map_err(|_| AppError::bad("更新包数据无效"))?;
-    if bytes.is_empty() || bytes.len() > 100 * 1024 * 1024 {
-        return Err(AppError::bad("更新包大小需在 1B-100MB 之间"));
+    if bytes.is_empty() || bytes.len() > 20 * 1024 * 1024 {
+        return Err(AppError::bad("更新包大小需在 1B-20MB 之间"));
     }
     let sha = sha256_b64(&bytes);
     let pk = update_pubkey().ok_or_else(|| AppError::bad("服务端未配置 LIAISONYY_UPDATE_PUBKEY"))?;
@@ -3613,6 +3613,8 @@ async fn main() -> anyhow::Result<()> {
         None => exe_dir.join("data"),
     };
     let mut port: u16 = cfg.port.unwrap_or(47820);
+    let mut install_autostart = false;
+    let mut remove_autostart = false;
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
     while i < args.len() {
@@ -3625,8 +3627,47 @@ async fn main() -> anyhow::Result<()> {
                 port = args[i + 1].parse().unwrap_or(47820);
                 i += 2;
             }
+            "--install-autostart" => {
+                install_autostart = true;
+                i += 1;
+            }
+            "--remove-autostart" => {
+                remove_autostart = true;
+                i += 1;
+            }
             _ => i += 1,
         }
+    }
+    if install_autostart || remove_autostart {
+        #[cfg(windows)]
+        {
+            let appdata = std::env::var("APPDATA")?;
+            let dir = PathBuf::from(appdata)
+                .join("Microsoft\\Windows\\Start Menu\\Programs\\Startup");
+            let p = dir.join("liaisonyy-server.cmd");
+            if remove_autostart {
+                let _ = std::fs::remove_file(&p);
+                println!("autostart removed: {}", p.display());
+            } else {
+                std::fs::create_dir_all(&dir)?;
+                let exe = std::env::current_exe()?;
+                let workdir = exe.parent().unwrap_or_else(|| FsPath::new("."));
+                let script = format!(
+                    "@echo off\r\ncd /d \"{}\"\r\nstart \"\" \"{}\" --data-dir \"{}\" --port {}\r\n",
+                    workdir.display(),
+                    exe.display(),
+                    data.display(),
+                    port
+                );
+                std::fs::write(&p, script)?;
+                println!("autostart installed: {}", p.display());
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            eprintln!("autostart is only supported on Windows");
+        }
+        return Ok(());
     }
     std::fs::create_dir_all(&data)?;
     apply_pending_restore(&data)?;
@@ -3733,6 +3774,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/admin/update/package", post(admin_upload_update))
         .route("/admin", get(admin_page))
         .route("/admin/", get(admin_page))
+        .layer(axum::extract::DefaultBodyLimit::max(32 * 1024 * 1024))
         .with_state(state);
     let (cert, key) = ensure_tls(&data)?;
     let _ = rustls::crypto::ring::default_provider().install_default();

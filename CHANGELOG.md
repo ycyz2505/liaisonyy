@@ -88,6 +88,15 @@
 - **服务端配置**：支持 exe 同目录 `config.toml`（`school_name`、`server_name`、`port`、`data_dir`）；命令行参数优先。
 - **并发验证**：新增 `tests/load.rs`，23 个账号并发登录后各发 8 条班群消息（共 184 条），全部落库且健康检查正常。
 
+### 发布准备（0.2.0）
+
+- 版本号统一升级到 **0.2.0**：Cargo workspace / `liaisonyy-core::APP_VERSION` / `client/package.json` / `tauri.conf.json`。
+- 服务端新增 `--install-autostart` / `--remove-autostart`：在当前用户「启动」文件夹写入/删除 `liaisonyy-server.cmd`。
+- 请求体上限提高到 32 MB；更新包上限 20 MB，base64 上传可正常通过。
+- 自动更新下载失败时批处理会重试替换，避免文件仍被占用导致更新丢失。
+- 新增 `crates/core/tests/crypto.rs` 5 个加密测试；e2e 增加管理后台 CSP/`X-Frame-Options` 检查。
+- 三份使用指南、README、设计稿、交付说明同步到 0.2.0。
+
 ### 文档
 
 - 设计稿升级到 v0.7（进行中），补充网络时间与敏感表单清理。

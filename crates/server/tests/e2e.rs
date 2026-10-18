@@ -178,6 +178,9 @@ fn e2e_core_flow() {
     if !ready {
         panic!("server did not start");
     }
+    let admin_page = a.get(&format!("{base}/admin")).call().unwrap();
+    assert_eq!(admin_page.header("x-frame-options"), Some("DENY"));
+    assert!(admin_page.header("content-security-policy").is_some());
     let setup_token = std::fs::read_to_string(dir.join("setup_token.txt")).unwrap().trim().to_string();
 
     // root keys + setup

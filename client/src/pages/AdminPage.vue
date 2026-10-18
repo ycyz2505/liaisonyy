@@ -13,8 +13,8 @@ function pickUpdate(e: Event) {
   const input = e.target as HTMLInputElement;
   const f = input.files?.[0];
   if (!f) return;
-  if (f.size > 100 * 1024 * 1024) {
-    showError("更新包最大 100 MB");
+  if (f.size > 20 * 1024 * 1024) {
+    showError("更新包最大 20 MB");
     return;
   }
   const reader = new FileReader();

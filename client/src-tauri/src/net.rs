@@ -1044,7 +1044,7 @@ impl Worker {
         if version.is_empty() || url.is_empty() || sha.is_empty() {
             return Ok(None);
         }
-        let Some(pk_b64) = option_env!("LIAISONYY_UPDATE_PUBKEY") else {
+        let Some(pk_b64) = option_env!("LIAISONYY_UPDATE_PUBKEY").filter(|s| !s.is_empty()) else {
             return Ok(None);
         };
         let pk_raw = b64d(pk_b64).map_err(|_| "更新公钥格式不正确".to_string())?;
@@ -1084,7 +1084,7 @@ impl Worker {
         resp.into_reader()
             .read_to_end(&mut buf)
             .map_err(|e| e.to_string())?;
-        if buf.len() > 100 * 1024 * 1024 {
+        if buf.len() > 32 * 1024 * 1024 {
             return Err("更新包过大".into());
         }
         if sha256_b64(&buf) != sha {
@@ -1096,8 +1096,10 @@ impl Worker {
             let dir = exe.parent().ok_or_else(|| "无法定位程序目录".to_string())?;
             std::fs::write(dir.join("liaisonyy-new.exe"), &buf).map_err(|e| e.to_string())?;
             let script = "@echo off\r\n\
+                :retry\r\n\
                 timeout /t 2 /nobreak >nul\r\n\
                 move /y \"%~dp0liaisonyy-new.exe\" \"%~dp0liaisonyy.exe\"\r\n\
+                if errorlevel 1 goto retry\r\n\
                 start \"\" \"%~dp0liaisonyy.exe\"\r\n\
                 del \"%~f0\"\r\n";
             std::fs::write(dir.join("liaisonyy-update.bat"), script).map_err(|e| e.to_string())?;
@@ -1780,6 +1782,7 @@ impl Worker {
         self.send(Ev::LoggedIn { user: resp, offline: false });
         let convs = self.load_conversations(true)?;
         self.send(Ev::Conversations(convs));
+        self.persist_pin();
         self.start_ws();
         Ok(())
     }
