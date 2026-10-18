@@ -55,6 +55,8 @@ Tauri 客户端需要 Windows MSVC；本机磁盘不够装 MSVC，因此官方�
 - `server-linux` job：Linux musl 服务端
 - tag `v*` 时自动创建 Release
 
+> 2026-10-18 CI 已通过（run 39087886389）：client 8m49s、server-windows 3m20s、server-linux 1m12s、test 1m56s。客户端 `liaisonyy.exe` 4.01 MB + `WebView2Loader.dll` 0.14 MB；`dumpbin` 显示只依赖 Windows 系统 DLL/UCRT，无 `VCRUNTIME140.dll` / `MSVCP140.dll`。
+
 本地只构建前端（无需 MSVC）：
 
 ```powershell
@@ -119,7 +121,7 @@ cd D:\liaisonyy
 | 班级群（纯文本、密钥版本） | ✅ |
 | 重置密钥（8 位一次性） | ✅ |
 | 管理后台（统计/审计/名单） | ✅ |
-| Tauri 客户端：托盘/右下角小窗/大关闭按钮 | ✅（CI 构建） |
+| Tauri 客户端：托盘/右下角小窗/大关闭按钮 | ✅（CI 已验证；4.01 MB + WebView2Loader.dll） |
 | 离线队列（密文）+ 轮询 | ✅ |
 | 转班、举报、头像、自动更新、UDP 发现、WebSocket、老板键、完整软键盘 | ⏳ 后续版本 |
 | 管理员聊天解密查看工具 | ⏳ 后续版本（当前只有重置密钥） |

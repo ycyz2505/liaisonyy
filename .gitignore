@@ -3,6 +3,7 @@ client/node_modules/
 client/dist/
 client/src-tauri/gen/
 dist/
+artifacts*/
 *.log
 *.zip
 *.exe
