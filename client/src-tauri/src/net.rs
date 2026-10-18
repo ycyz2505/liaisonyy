@@ -377,6 +377,7 @@ impl Worker {
     fn do_bootstrap(&mut self) -> Result<BootstrapResponse, String> {
         let v = self.call("GET", "/api/v1/bootstrap", None, None)?;
         let b: BootstrapResponse = serde_json::from_value(v).map_err(|e| e.to_string())?;
+        clock::init_network_time(b.server_time);
         if let Some(s) = self.session.as_mut() {
             s.root_pk = b.root_public_key.clone();
         }
@@ -532,6 +533,7 @@ impl Worker {
     }
 
     fn finish_login(&mut self, resp: LoginResponse, kind: &str, secret: &str) -> Result<(), String> {
+        clock::init_network_time(resp.server_time);
         let (salt, params, wrapped) = if kind == "pin" {
             (
                 resp.pin_salt.clone().ok_or_else(|| "该账号未设置 PIN".to_string())?,
@@ -587,6 +589,7 @@ impl Worker {
 
     fn offline_login(&mut self, key: &str, kind: &str, input: &str) -> Result<(), String> {
         let cached = self.cache.login.clone().ok_or_else(|| "没有本机缓存，无法离线登录".to_string())?;
+        clock::init_network_time(cached.server_time);
         let key_match = key.chars().all(|c| c.is_ascii_digit())
             && key.parse::<i64>().ok() == Some(cached.uid)
             || key.to_lowercase() == cached.handle.to_lowercase();
@@ -814,9 +817,16 @@ impl Worker {
         if self.token().map(|t| t.is_empty()).unwrap_or(true) {
             return;
         }
-        if let Err(_) = self.call("GET", "/api/v1/health", None, None) {
-            self.set_offline(true);
-            return;
+        match self.call("GET", "/api/v1/health", None, None) {
+            Ok(v) => {
+                if let Some(t) = v.get("server_time").and_then(|x| x.as_i64()) {
+                    clock::init_network_time(t);
+                }
+            }
+            Err(_) => {
+                self.set_offline(true);
+                return;
+            }
         }
         self.set_offline(false);
         let convs = match self.load_conversations(false) {

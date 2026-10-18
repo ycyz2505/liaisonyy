@@ -44,6 +44,11 @@ fn get_settings() -> store::Settings {
     store::load_settings()
 }
 
+#[tauri::command]
+fn get_server_time() -> i64 {
+    liaisonyy_core::clock::now()
+}
+
 fn show_window(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         if let Some(monitor) = w
@@ -135,7 +140,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![send_cmd, panic_logout, quit_app, get_settings])
+        .invoke_handler(tauri::generate_handler![send_cmd, panic_logout, quit_app, get_settings, get_server_time])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();

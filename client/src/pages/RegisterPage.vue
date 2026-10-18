@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted } from "vue";
 import { send } from "../api";
-import { state } from "../store";
+import { resetRegisterForm, state } from "../store";
 
 const available = computed(() => state.roster.filter((r) => !r.claimed));
 
@@ -31,6 +31,7 @@ function submit() {
 }
 
 onMounted(() => {
+  resetRegisterForm();
   if (state.classId != null) {
     send({ type: "Roster", data: { class_id: state.classId } });
   }

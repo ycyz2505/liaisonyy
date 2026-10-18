@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from "vue";
-import { send } from "../api";
+import { send, serverNowSec } from "../api";
 import { formatTime, newId, state } from "../store";
 
 const listRef = ref<HTMLElement | null>(null);
@@ -31,7 +31,7 @@ function sendMsg() {
     sender_uid: state.user.uid,
     sender_name: state.user.display_name,
     text,
-    created_at: Math.floor(Date.now() / 1000),
+    created_at: serverNowSec(),
     mine: true,
     pending: true,
     client_msg_id,

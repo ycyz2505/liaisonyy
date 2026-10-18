@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted } from "vue";
 import { send } from "../api";
-import { state } from "../store";
+import { resetRegisterForm, state } from "../store";
 import type { AccountPublic } from "../types";
 
 const sorted = computed(() =>
@@ -23,6 +23,7 @@ function openAccount(a: AccountPublic) {
 }
 
 function register() {
+  resetRegisterForm();
   if (state.classId != null) {
     send({ type: "Roster", data: { class_id: state.classId } });
   }

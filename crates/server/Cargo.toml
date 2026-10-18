@@ -17,6 +17,7 @@ rand = "0.8"
 base64 = "0.22"
 sha2 = "0.10"
 hmac = "0.12"
+httpdate = "1"
 uuid = { version = "1", features = ["v4"] }
 anyhow = "1"
 tracing = "0.1"

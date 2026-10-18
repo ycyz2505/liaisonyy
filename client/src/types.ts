@@ -19,6 +19,7 @@ export interface BootstrapResponse {
   server_name: string;
   version: string;
   protocol: number;
+  server_time: number;
   root_public_key: string | null;
   kdf_params: KdfParams;
   classes: ClassInfo[];
@@ -52,6 +53,7 @@ export interface LoginResponse {
   role: string;
   login_policy: string;
   public_key: string;
+  server_time: number;
   matched_offset: number;
   matched_len: number;
   pwd_salt: string;

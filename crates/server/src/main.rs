@@ -10,9 +10,11 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
-    net::SocketAddr,
+    io::{Read, Write},
+    net::{SocketAddr, TcpStream, ToSocketAddrs, UdpSocket},
     path::{Path as FsPath, PathBuf},
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 const ADMIN_HTML: &str = include_str!("../../../admin-web/index.html");
@@ -318,6 +320,7 @@ fn build_login_response(
         role,
         login_policy,
         public_key,
+        server_time: now(),
         matched_offset,
         matched_len,
         pwd_salt,
@@ -426,7 +429,7 @@ fn rotate_group_key(conn: &Connection, class_id: i64) -> ApiResult<()> {
 // ---------------- handlers ----------------
 
 async fn health(State(state): State<AppState>) -> Json<Value> {
-    Json(json!({"status":"ok","version":state.version.as_str(),"protocol":PROTOCOL_VERSION}))
+    Json(json!({"status":"ok","version":state.version.as_str(),"protocol":PROTOCOL_VERSION,"server_time":now()}))
 }
 
 async fn bootstrap(State(state): State<AppState>) -> ApiResult<Json<BootstrapResponse>> {
@@ -444,6 +447,7 @@ async fn bootstrap(State(state): State<AppState>) -> ApiResult<Json<BootstrapRes
         server_name: get_setting(&conn, "server_name")?.unwrap_or_else(|| "liaisonyy".into()),
         version: state.version.to_string(),
         protocol: PROTOCOL_VERSION,
+        server_time: now(),
         root_public_key: root_pk,
         kdf_params: KdfParams::default(),
         classes,
@@ -1491,6 +1495,71 @@ fn ensure_tls(data: &FsPath) -> anyhow::Result<(PathBuf, PathBuf)> {
     Ok((cert, key))
 }
 
+fn ntp_query(host: &str) -> Option<i64> {
+    let addr = (host, 123u16).to_socket_addrs().ok()?.next()?;
+    let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
+    sock.set_read_timeout(Some(Duration::from_secs(1))).ok()?;
+    let mut packet = [0u8; 48];
+    packet[0] = 0x1b; // LI=0, VN=3, mode=3 (client)
+    sock.send_to(&packet, addr).ok()?;
+    let mut buf = [0u8; 48];
+    let (n, _) = sock.recv_from(&mut buf).ok()?;
+    if n < 48 {
+        return None;
+    }
+    let secs = u32::from_be_bytes([buf[40], buf[41], buf[42], buf[43]]) as i64;
+    let unix = secs - 2_208_988_800;
+    if unix > 1_600_000_000 {
+        Some(unix)
+    } else {
+        None
+    }
+}
+
+fn http_date_query(host: &str) -> Option<i64> {
+    let addr = (host, 80u16).to_socket_addrs().ok()?.next()?;
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(1)).ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(1))).ok()?;
+    let req = format!(
+        "HEAD / HTTP/1.0\r\nHost: {host}\r\nUser-Agent: liaisonyy-time-sync\r\nConnection: close\r\n\r\n"
+    );
+    stream.write_all(req.as_bytes()).ok()?;
+    let mut resp = String::new();
+    stream.read_to_string(&mut resp).ok()?;
+    for line in resp.lines() {
+        if line.len() > 5 && line[..5].eq_ignore_ascii_case("date:") {
+            let value = line[5..].trim();
+            if let Ok(t) = httpdate::parse_http_date(value) {
+                return t
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|d| d.as_secs() as i64);
+            }
+        }
+    }
+    None
+}
+
+/// Fetch authoritative time from the internet (NTP, then HTTP Date) and anchor
+/// the core clock to it. Returns the unix time on success.
+fn sync_network_time() -> Option<i64> {
+    for host in ["time.cloudflare.com", "ntp.aliyun.com", "pool.ntp.org"] {
+        if let Some(t) = ntp_query(host) {
+            liaisonyy_core::clock::init_network_time(t);
+            println!("network time synced via NTP {host}: {t}");
+            return Some(t);
+        }
+    }
+    for host in ["www.baidu.com", "www.cloudflare.com", "www.github.com"] {
+        if let Some(t) = http_date_query(host) {
+            liaisonyy_core::clock::init_network_time(t);
+            println!("network time synced via HTTP Date {host}: {t}");
+            return Some(t);
+        }
+    }
+    None
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -1519,6 +1588,13 @@ async fn main() -> anyhow::Result<()> {
     std::fs::create_dir_all(&data)?;
     let conn = Connection::open(data.join("liaisonyy.db"))?;
     init_db(&conn)?;
+    if sync_network_time().is_none() {
+        eprintln!("WARN: network time sync failed; using local clock until next retry");
+    }
+    std::thread::spawn(|| loop {
+        std::thread::sleep(Duration::from_secs(3600));
+        let _ = sync_network_time();
+    });
     let has_root: i64 = conn.query_row("SELECT COUNT(*) FROM root_state", [], |r| r.get(0))?;
     let hmac = load_or_create_keyring(&data)?;
     let setup_token = load_or_create_setup_token(&data, has_root > 0)?;

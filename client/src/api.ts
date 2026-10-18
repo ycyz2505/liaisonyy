@@ -30,3 +30,32 @@ export async function getSettings(): Promise<Settings> {
   if (isTauri) return await invoke<Settings>("get_settings");
   return { server: "https://127.0.0.1:47820", class_id: null, class_name: "", last_uid: null };
 }
+
+let serverTimeMs = 0;
+let perfAnchor = 0;
+
+/** Anchor the UI clock to the server's network-synced time. */
+export async function syncServerTime(): Promise<void> {
+  if (!isTauri) {
+    serverTimeMs = Date.now();
+    perfAnchor = performance.now();
+    return;
+  }
+  try {
+    const t = await invoke<number>("get_server_time");
+    serverTimeMs = t * 1000;
+    perfAnchor = performance.now();
+  } catch {
+    // keep the previous anchor; the next poll will refresh it
+  }
+}
+
+/** Monotonic server time in milliseconds. Local wall-clock changes do not affect it. */
+export function serverNowMs(): number {
+  if (perfAnchor === 0) return Date.now();
+  return serverTimeMs + (performance.now() - perfAnchor);
+}
+
+export function serverNowSec(): number {
+  return Math.floor(serverNowMs() / 1000);
+}

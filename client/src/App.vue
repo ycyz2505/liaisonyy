@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted } from "vue";
-import { getSettings, onEv, send } from "./api";
+import { getSettings, onEv, send, syncServerTime } from "./api";
 import { handleEv, state } from "./store";
 import TopBar from "./components/TopBar.vue";
 import WelcomePage from "./pages/WelcomePage.vue";
@@ -15,6 +15,8 @@ import AdminPage from "./pages/AdminPage.vue";
 import ResetPage from "./pages/ResetPage.vue";
 
 let unlisten: (() => void) | undefined;
+let timeTimer: number | undefined;
+let retryTimer: number | undefined;
 
 onMounted(async () => {
   unlisten = await onEv(handleEv);
@@ -23,13 +25,20 @@ onMounted(async () => {
   state.classId = s.class_id;
   state.className = s.class_name;
   state.page = s.class_id != null ? "Accounts" : "Welcome";
+  await syncServerTime();
+  retryTimer = window.setTimeout(syncServerTime, 2500);
+  timeTimer = window.setInterval(syncServerTime, 10 * 60 * 1000);
   send({ type: "Bootstrap" });
   if (s.class_id != null) {
     send({ type: "Accounts", data: { class_id: s.class_id } });
   }
 });
 
-onBeforeUnmount(() => unlisten?.());
+onBeforeUnmount(() => {
+  unlisten?.();
+  if (timeTimer) window.clearInterval(timeTimer);
+  if (retryTimer) window.clearTimeout(retryTimer);
+});
 </script>
 
 <template>

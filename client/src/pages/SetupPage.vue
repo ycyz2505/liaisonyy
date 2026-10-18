@@ -13,6 +13,20 @@ function submit() {
     },
   });
 }
+
+function copyCode() {
+  if (state.recoveryCode) {
+    void navigator.clipboard?.writeText(state.recoveryCode);
+  }
+}
+
+function finishSetup() {
+  state.loginKey = state.setupHandle;
+  state.loginKind = "password";
+  state.loginInput = "";
+  state.recoveryCode = "";
+  state.page = "Login";
+}
 </script>
 
 <template>
@@ -31,9 +45,11 @@ function submit() {
     <div v-if="state.recoveryCode" class="card">
       <p class="err">恢复码（只显示一次，请抄下来离线保存）：</p>
       <p class="mono" style="font-size: 18px; letter-spacing: 1px">{{ state.recoveryCode }}</p>
+      <button style="margin-top: 8px" @click="copyCode">复制恢复码</button>
+      <button class="primary" style="margin-top: 8px" @click="finishSetup">我已保存，去登录</button>
     </div>
 
-    <button class="primary" @click="submit">初始化</button>
+    <button v-if="!state.recoveryCode" class="primary" @click="submit">初始化</button>
     <button @click="state.page = 'Welcome'">返回</button>
   </div>
 </template>

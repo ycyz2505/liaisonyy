@@ -26,6 +26,47 @@ impl From<CoreError> for String {
     }
 }
 
+/// Network-anchored clock. The server initialises it from NTP/HTTP; clients
+/// initialise it from the server's `server_time`. All timestamps then use the
+/// monotonic elapsed time since the anchor, so changing the local wall clock
+/// does not affect message/expiry times.
+pub mod clock {
+    use std::sync::{Mutex, OnceLock};
+    use std::time::Instant;
+
+    struct Anchor {
+        unix: i64,
+        at: Instant,
+    }
+
+    static ANCHOR: OnceLock<Mutex<Option<Anchor>>> = OnceLock::new();
+
+    pub fn init_network_time(unix: i64) {
+        let lock = ANCHOR.get_or_init(|| Mutex::new(None));
+        if let Ok(mut guard) = lock.lock() {
+            *guard = Some(Anchor { unix, at: Instant::now() });
+        }
+    }
+
+    pub fn is_synced() -> bool {
+        ANCHOR
+            .get()
+            .and_then(|lock| lock.lock().ok().map(|g| g.is_some()))
+            .unwrap_or(false)
+    }
+
+    pub fn now() -> i64 {
+        if let Some(lock) = ANCHOR.get() {
+            if let Ok(guard) = lock.lock() {
+                if let Some(anchor) = guard.as_ref() {
+                    return anchor.unix + anchor.at.elapsed().as_secs() as i64;
+                }
+            }
+        }
+        time::OffsetDateTime::now_utc().unix_timestamp()
+    }
+}
+
 pub fn b64e(b: &[u8]) -> String {
     B64.encode(b)
 }
@@ -184,7 +225,7 @@ pub fn random_code(len: usize) -> String {
 }
 
 pub fn now() -> i64 {
-    time::OffsetDateTime::now_utc().unix_timestamp()
+    clock::now()
 }
 
 pub fn sha256_b64(data: &[u8]) -> String {
@@ -237,6 +278,7 @@ pub struct BootstrapResponse {
     pub server_name: String,
     pub version: String,
     pub protocol: i64,
+    pub server_time: i64,
     pub root_public_key: Option<String>,
     pub kdf_params: KdfParams,
     pub classes: Vec<ClassInfo>,
@@ -318,6 +360,7 @@ pub struct LoginResponse {
     pub role: String,
     pub login_policy: String,
     pub public_key: String,
+    pub server_time: i64,
     pub matched_offset: usize,
     pub matched_len: usize,
     pub pwd_salt: String,

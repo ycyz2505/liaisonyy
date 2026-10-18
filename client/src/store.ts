@@ -1,5 +1,5 @@
 import { reactive } from "vue";
-import { send } from "./api";
+import { send, serverNowMs } from "./api";
 import type {
   AccountPublic,
   AdminStats,
@@ -95,7 +95,7 @@ export function showError(msg: string): void {
 export function formatTime(ts: number): string {
   if (!ts) return "";
   const d = new Date(ts * 1000);
-  const now = new Date();
+  const now = new Date(serverNowMs());
   if (d.toDateString() === now.toDateString()) {
     return `${d.getHours().toString().padStart(2, "0")}:${d
       .getMinutes()
@@ -106,6 +106,34 @@ export function formatTime(ts: number): string {
     .getHours()
     .toString()
     .padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}`;
+}
+
+export function resetRegisterForm(): void {
+  state.selectedRoster = null;
+  state.regHandle = "";
+  state.regDisplay = "";
+  state.regPassword = "";
+  state.regPin = "";
+  state.regPolicy = "pin_allowed";
+  state.roster = [];
+}
+
+export function clearSensitiveForms(): void {
+  resetRegisterForm();
+  state.loginAccount = null;
+  state.loginInput = "";
+  state.resetKey = "";
+  state.resetCode = "";
+  state.resetNewPassword = "";
+  state.resetNewPin = "";
+  state.setupToken = "";
+  state.setupPassword = "";
+  state.setupHandle = "";
+  state.setupDisplay = "";
+  state.chatInput = "";
+  state.friendMsg = "";
+  state.recoveryCode = "";
+  state.adminUid = "";
 }
 
 export function newId(): string {
@@ -131,13 +159,22 @@ export function handleEv(ev: Ev): void {
       break;
     case "SetupDone":
       state.recoveryCode = ev.data.recovery_code;
-      showToast("初始化完成。请保存恢复码，然后用总管理员账号登录。");
+      showToast("初始化完成。请先抄下恢复码，再点「我已保存，去登录」。");
       state.loginKey = state.setupHandle;
       state.loginKind = "password";
       state.loginInput = "";
-      state.page = "Login";
+      state.setupPassword = "";
+      state.setupToken = "";
       break;
     case "LoggedIn": {
+      resetRegisterForm();
+      state.loginInput = "";
+      state.resetCode = "";
+      state.resetNewPassword = "";
+      state.resetNewPin = "";
+      state.chatInput = "";
+      state.friendMsg = "";
+      state.recoveryCode = "";
       state.user = ev.data.user;
       state.offline = ev.data.offline;
       if (ev.data.user.class_id != null) {
@@ -159,6 +196,7 @@ export function handleEv(ev: Ev): void {
       state.conversations = [];
       state.messages = {};
       state.currentConv = null;
+      clearSensitiveForms();
       if (state.classId != null) send({ type: "Accounts", data: { class_id: state.classId } });
       break;
     case "Conversations":
@@ -215,12 +253,15 @@ export function handleEv(ev: Ev): void {
       break;
     case "ResetKey": {
       state.resetCode = ev.data.code;
-      const mins = Math.max(0, Math.round((ev.data.expires_at - Date.now() / 1000) / 60));
+      const mins = Math.max(0, Math.round((ev.data.expires_at - serverNowMs() / 1000) / 60));
       showToast(`重置密钥：${ev.data.code}（约 ${mins} 分钟有效，只显示这一次）`);
       break;
     }
     case "ResetDone":
       showToast("密码已重置，请用新密码登录");
+      state.resetCode = "";
+      state.resetNewPassword = "";
+      state.resetNewPin = "";
       state.page = "Login";
       break;
     case "Toast":
