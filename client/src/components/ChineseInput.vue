@@ -39,7 +39,6 @@ function insert(text: string) {
   const end = input.selectionEnd ?? start;
   setValue(v.slice(0, start) + text + v.slice(end));
   nextTick(() => {
-    input.focus();
     const p = Math.min(start + text.length, props.maxlength ?? Number.MAX_SAFE_INTEGER);
     input.setSelectionRange(p, p);
   });
@@ -58,7 +57,6 @@ function backspace() {
   const from = start === end ? start - 1 : start;
   setValue(v.slice(0, from) + v.slice(end));
   nextTick(() => {
-    input.focus();
     input.setSelectionRange(from, from);
   });
 }

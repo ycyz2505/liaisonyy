@@ -33,6 +33,10 @@ fn panic_logout(app: AppHandle, state: State<'_, AppState>) -> Result<(), String
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.hide();
     }
+    if let Some(w) = app.get_webview_window("ime") {
+        let _ = w.hide();
+    }
+    let _ = app.emit_to("main", "ime-closed", ());
     Ok(())
 }
 
@@ -76,6 +80,76 @@ fn ime_probe_result(ok: bool, detail: String) {
     let _ = std::fs::write(dir.join("ime-probe.txt"), format!("ok={ok}\n{detail}\n"));
 }
 
+fn ime_pos_file() -> std::path::PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("data")))
+        .unwrap_or_else(|| std::path::PathBuf::from("data"))
+        .join("ime-window.json")
+}
+
+fn load_ime_pos() -> Option<(i32, i32)> {
+    let s = std::fs::read_to_string(ime_pos_file()).ok()?;
+    let mut it = s.trim().split(',');
+    let x = it.next()?.parse().ok()?;
+    let y = it.next()?.parse().ok()?;
+    Some((x, y))
+}
+
+fn save_ime_pos(x: i32, y: i32) {
+    let p = ime_pos_file();
+    if let Some(dir) = p.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(p, format!("{x},{y}"));
+}
+
+fn place_ime_near_main(app: &AppHandle, ime: &tauri::WebviewWindow) {
+    let Some(main) = app.get_webview_window("main") else {
+        return;
+    };
+    let Ok(mp) = main.outer_position() else {
+        return;
+    };
+    let ms = main.outer_size().unwrap_or(tauri::PhysicalSize::new(380, 680));
+    let is = ime.outer_size().unwrap_or(tauri::PhysicalSize::new(380, 320));
+    let mut x = mp.x - is.width as i32 - 8;
+    let mut y = mp.y + ms.height as i32 - is.height as i32;
+    if x < 0 {
+        x = mp.x;
+        y = mp.y - is.height as i32 - 8;
+    }
+    let _ = ime.set_position(tauri::PhysicalPosition::new(x.max(0), y.max(0)));
+}
+
+#[tauri::command]
+fn ime_show(app: AppHandle) {
+    let Some(w) = app.get_webview_window("ime") else {
+        return;
+    };
+    if load_ime_pos().is_none() {
+        place_ime_near_main(&app, &w);
+    }
+    let _ = w.show();
+    let _ = w.set_focus();
+    let _ = app.emit_to("ime", "ime-open", ());
+}
+
+#[tauri::command]
+fn ime_hide(app: AppHandle) {
+    if let Some(w) = app.get_webview_window("ime") {
+        let _ = w.hide();
+    }
+    let _ = app.emit_to("main", "ime-closed", ());
+}
+
+#[tauri::command]
+fn ime_start_drag(app: AppHandle) {
+    if let Some(w) = app.get_webview_window("ime") {
+        let _ = w.start_dragging();
+    }
+}
+
 fn show_window(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         if let Some(monitor) = w
@@ -106,6 +180,10 @@ fn toggle_window(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         if w.is_visible().unwrap_or(false) {
             let _ = w.hide();
+            if let Some(ime) = app.get_webview_window("ime") {
+                let _ = ime.hide();
+            }
+            let _ = app.emit_to("main", "ime-closed", ());
         } else {
             show_window(app);
         }
@@ -151,6 +229,12 @@ pub fn run() {
 
             let _ = app.global_shortcut().register("Control+Shift+H");
 
+            if let Some(ime) = app.get_webview_window("ime") {
+                if let Some((x, y)) = load_ime_pos() {
+                    let _ = ime.set_position(tauri::PhysicalPosition::new(x, y));
+                }
+            }
+
             let show = MenuItem::with_id(app, "show", "显示 / 隐藏", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &quit])?;
@@ -182,8 +266,32 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![send_cmd, panic_logout, quit_app, get_settings, get_server_time, notify, ime_probe_enabled, ime_probe_result])
+        .invoke_handler(tauri::generate_handler![
+            send_cmd,
+            panic_logout,
+            quit_app,
+            get_settings,
+            get_server_time,
+            notify,
+            ime_probe_enabled,
+            ime_probe_result,
+            ime_show,
+            ime_hide,
+            ime_start_drag
+        ])
         .on_window_event(|window, event| {
+            if window.label() == "ime" {
+                match event {
+                    tauri::WindowEvent::Moved(pos) => save_ime_pos(pos.x, pos.y),
+                    tauri::WindowEvent::CloseRequested { api, .. } => {
+                        api.prevent_close();
+                        let _ = window.hide();
+                        let _ = window.app_handle().emit_to("main", "ime-closed", ());
+                    }
+                    _ => {}
+                }
+                return;
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 if let Some(state) = window.app_handle().try_state::<AppState>() {
@@ -191,6 +299,10 @@ pub fn run() {
                         let _ = tx.send(net::Cmd::Logout);
                     }
                 }
+                if let Some(ime) = window.app_handle().get_webview_window("ime") {
+                    let _ = ime.hide();
+                }
+                let _ = window.app_handle().emit_to("main", "ime-closed", ());
                 let _ = window.hide();
             }
         })

@@ -26,6 +26,20 @@
         "skipTaskbar": true,
         "visible": false,
         "center": false
+      },
+      {
+        "label": "ime",
+        "title": "liaisonyy IME",
+        "url": "ime.html",
+        "width": 380,
+        "height": 320,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "center": false
       }
     ],
     "security": {

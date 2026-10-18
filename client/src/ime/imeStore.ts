@@ -1,4 +1,6 @@
 import { reactive } from "vue";
+import { invoke } from "@tauri-apps/api/core";
+import { isTauri } from "../api";
 
 export interface ImeTarget {
   insert(text: string): void;
@@ -27,15 +29,24 @@ export function setImeTarget(target: ImeTarget): void {
 }
 
 export function clearImeTarget(target: ImeTarget): void {
-  if (ime.target === target) ime.target = null;
+  if (ime.target === target) {
+    ime.target = null;
+    closeIme();
+  }
 }
 
 export function openIme(): void {
   ime.open = true;
+  if (isTauri) {
+    void invoke("ime_show").catch(() => undefined);
+  }
 }
 
 export function closeIme(): void {
   ime.open = false;
+  if (isTauri) {
+    void invoke("ime_hide").catch(() => undefined);
+  }
 }
 
 export function setImeAuto(value: boolean): void {
@@ -45,4 +56,12 @@ export function setImeAuto(value: boolean): void {
   } catch {
     // ignore storage errors
   }
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (e) => {
+    if (e.key === AUTO_KEY && e.newValue != null) {
+      ime.auto = e.newValue !== "0";
+    }
+  });
 }
