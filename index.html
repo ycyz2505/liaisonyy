@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>正在下载 liaisonyy 0.3.1...</title>
+  <script>
+    (function () {
+      var FILE = 'liaisonyy-0.3.1-win64-tauri.zip';
+
+      function startDownload() {
+        var a = document.createElement('a');
+        a.href = FILE;
+        a.download = FILE;
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      }
+
+      // DOM 就绪后立即触发
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', startDownload);
+      } else {
+        startDownload();
+      }
+    })();
+  </script>
+</head>
+<body>
+  <h1>正在开始下载…</h1>
+  <p>文件：<code>liaisonyy-0.3.1-win64-tauri.zip</code></p>
+  <p>如果下载没有自动开始，请
+    <a href="liaisonyy-0.3.1-win64-tauri.zip" download>点此手动下载</a>
+  </p>
+</body>
+</html>
