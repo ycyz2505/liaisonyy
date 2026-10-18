@@ -61,6 +61,21 @@ fn notify(app: AppHandle, title: String, body: String) {
         .show();
 }
 
+#[tauri::command]
+fn ime_probe_enabled() -> bool {
+    std::env::var("LIAISONYY_IME_PROBE").is_ok()
+}
+
+#[tauri::command]
+fn ime_probe_result(ok: bool, detail: String) {
+    let dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("data")))
+        .unwrap_or_else(|| std::path::PathBuf::from("data"));
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(dir.join("ime-probe.txt"), format!("ok={ok}\n{detail}\n"));
+}
+
 fn show_window(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         if let Some(monitor) = w
@@ -167,7 +182,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![send_cmd, panic_logout, quit_app, get_settings, get_server_time, notify])
+        .invoke_handler(tauri::generate_handler![send_cmd, panic_logout, quit_app, get_settings, get_server_time, notify, ime_probe_enabled, ime_probe_result])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();

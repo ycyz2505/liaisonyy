@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted } from "vue";
-import { getSettings, onEv, send, syncServerTime } from "./api";
+import { invoke } from "@tauri-apps/api/core";
+import { getSettings, isTauri, onEv, send, syncServerTime } from "./api";
 import { handleEv, state } from "./store";
 import { ime } from "./ime/imeStore";
+import { rime } from "./ime/rime";
 import FloatingKeyboard from "./components/FloatingKeyboard.vue";
 import TopBar from "./components/TopBar.vue";
 import WelcomePage from "./pages/WelcomePage.vue";
@@ -26,6 +28,26 @@ let timeTimer: number | undefined;
 let retryTimer: number | undefined;
 let noticeTimer: number | undefined;
 
+async function imeProbe() {
+  if (!isTauri) return;
+  try {
+    if (!(await invoke<boolean>("ime_probe_enabled"))) return;
+    await rime.init();
+    const ctx = await rime.process("nihao");
+    const candidates = (ctx.candidates ?? []).map((c) => c.text);
+    await invoke("ime_probe_result", {
+      ok: candidates.includes("你好"),
+      detail: JSON.stringify(candidates),
+    });
+  } catch (e) {
+    try {
+      await invoke("ime_probe_result", { ok: false, detail: String(e) });
+    } catch {
+      // diagnostic only
+    }
+  }
+}
+
 onMounted(async () => {
   unlisten = await onEv(handleEv);
   const s = await getSettings();
@@ -40,6 +62,7 @@ onMounted(async () => {
     if (state.user) send({ type: "Notifications" });
   }, 60 * 1000);
   send({ type: "Bootstrap" });
+  void imeProbe();
   if (s.class_id != null) {
     send({ type: "Accounts", data: { class_id: s.class_id } });
   }
