@@ -55,7 +55,7 @@ Tauri 客户端需要 Windows MSVC；本机磁盘不够装 MSVC，因此官方�
 - `server-linux` job：Linux musl 服务端
 - tag `v*` 时自动创建 Release
 
-> 2026-10-18 CI 已通过（run 39087886389）：client 8m49s、server-windows 3m20s、server-linux 1m12s、test 1m56s。客户端 `liaisonyy.exe` 4.01 MB + `WebView2Loader.dll` 0.14 MB；`dumpbin` 显示只依赖 Windows 系统 DLL/UCRT，无 `VCRUNTIME140.dll` / `MSVCP140.dll`。
+> 2026-10-18 0.2.0 CI 已通过（run 39102323838）：test 3m5s、server-windows 3m12s、server-linux 1m8s、client 6m30s。客户端 `liaisonyy.exe` 6.13 MB + `WebView2Loader.dll` 0.14 MB；服务端 Windows 5.36 MB、Linux 6.26 MB。`dumpbin` 显示客户端只依赖 Windows 系统 DLL/UCRT，无 `VCRUNTIME140.dll` / `MSVCP140.dll`。
 
 本地只构建前端（无需 MSVC）：
 
