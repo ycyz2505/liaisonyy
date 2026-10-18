@@ -2,6 +2,7 @@
 import { computed } from "vue";
 import { send } from "../api";
 import { state } from "../store";
+import Keyboard from "../components/Keyboard.vue";
 
 const canPin = computed(
   () => state.loginAccount == null || state.loginAccount.login_policy === "pin_allowed",
@@ -81,6 +82,7 @@ function forgot() {
     <div v-if="state.loginKind === 'pin'" class="pin-pad">
       <button v-for="k in pinKeys" :key="k" @click="press(k)">{{ k }}</button>
     </div>
+    <Keyboard v-else v-model="state.loginInput" />
 
     <button class="primary" style="margin-top: 10px" @click="login">登录</button>
     <div class="row">

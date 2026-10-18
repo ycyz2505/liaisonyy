@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { send } from "../api";
 import { state } from "../store";
+import Keyboard from "../components/Keyboard.vue";
 
 function submit() {
   send({
@@ -25,6 +26,7 @@ function submit() {
     <input v-model="state.resetCode" placeholder="8 位数字" />
     <label>新密码（8 位以上，含字母和数字）</label>
     <input v-model="state.resetNewPassword" type="password" />
+    <Keyboard v-model="state.resetNewPassword" />
     <label>新 PIN（可选，4-20 位数字；留空则改为仅密码登录）</label>
     <input v-model="state.resetNewPin" type="password" />
     <button class="primary" @click="submit">重置</button>

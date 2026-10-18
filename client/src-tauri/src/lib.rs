@@ -8,6 +8,8 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, State,
 };
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+use tauri_plugin_notification::NotificationExt;
 
 struct AppState {
     cmd: Mutex<Sender<net::Cmd>>,
@@ -47,6 +49,16 @@ fn get_settings() -> store::Settings {
 #[tauri::command]
 fn get_server_time() -> i64 {
     liaisonyy_core::clock::now()
+}
+
+#[tauri::command]
+fn notify(app: AppHandle, title: String, body: String) {
+    let _ = app
+        .notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show();
 }
 
 fn show_window(app: &AppHandle) {
@@ -95,6 +107,19 @@ fn tray_icon_rgba() -> Vec<u8> {
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_window(app);
+        }))
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    if event.state() == ShortcutState::Pressed {
+                        toggle_window(app);
+                    }
+                })
+                .build(),
+        )
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let settings = store::load_settings();
             let cache = store::load_cache();
@@ -108,6 +133,8 @@ pub fn run() {
                     let _ = handle.emit("liaisonyy-ev", ev);
                 }
             });
+
+            let _ = app.global_shortcut().register("Control+Shift+H");
 
             let show = MenuItem::with_id(app, "show", "显示 / 隐藏", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
@@ -140,7 +167,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![send_cmd, panic_logout, quit_app, get_settings, get_server_time])
+        .invoke_handler(tauri::generate_handler![send_cmd, panic_logout, quit_app, get_settings, get_server_time, notify])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();

@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::Read;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -123,6 +124,7 @@ pub enum Cmd {
     AdminUserConversations { uid: i64 },
     AdminDecryptConversation { uid: i64, conv_id: i64 },
     Discover,
+    Nudge,
     CheckUpdate,
     ApplyUpdate { url: String, sha256: String },
     AdminUpdatePackage { data: String, version: String, min_client: String, signature: String },
@@ -216,6 +218,8 @@ impl Drop for Session {
 struct Worker {
     agent: ureq::Agent,
     pin_seen: Arc<Mutex<Option<String>>>,
+    cmd_tx: Sender<Cmd>,
+    ws_stop: Arc<AtomicBool>,
     base: String,
     settings: Settings,
     cache: Cache,
@@ -229,6 +233,7 @@ struct Worker {
 pub fn spawn(settings: Settings, cache: Cache) -> (Sender<Cmd>, Receiver<Ev>) {
     let (cmd_tx, cmd_rx) = mpsc::channel::<Cmd>();
     let (ev_tx, ev_rx) = mpsc::channel::<Ev>();
+    let cmd_tx_worker = cmd_tx.clone();
     thread::spawn(move || {
         let base = settings.server.clone();
         let pin = settings.tls_pins.get(&host_key(&base)).cloned();
@@ -236,6 +241,8 @@ pub fn spawn(settings: Settings, cache: Cache) -> (Sender<Cmd>, Receiver<Ev>) {
         let mut w = Worker {
             agent,
             pin_seen,
+            cmd_tx: cmd_tx_worker,
+            ws_stop: Arc::new(AtomicBool::new(false)),
             base,
             settings,
             cache,
@@ -332,22 +339,90 @@ fn host_key(base: &str) -> String {
         .to_string()
 }
 
-fn make_agent(pin: Option<String>) -> (ureq::Agent, Arc<Mutex<Option<String>>>) {
-    let seen = Arc::new(Mutex::new(None));
+fn build_tls_config(
+    pin: Option<String>,
+    seen: Arc<Mutex<Option<String>>>,
+) -> Arc<rustls::ClientConfig> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let config = rustls::ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
         .expect("tls protocol versions")
         .dangerous()
-        .with_custom_certificate_verifier(Arc::new(TofuVerifier {
-            pin,
-            seen: seen.clone(),
-        }))
+        .with_custom_certificate_verifier(Arc::new(TofuVerifier { pin, seen }))
         .with_no_client_auth();
-    let agent = ureq::AgentBuilder::new()
-        .tls_config(Arc::new(config))
-        .build();
+    Arc::new(config)
+}
+
+fn make_agent(pin: Option<String>) -> (ureq::Agent, Arc<Mutex<Option<String>>>) {
+    let seen = Arc::new(Mutex::new(None));
+    let config = build_tls_config(pin, seen.clone());
+    let agent = ureq::AgentBuilder::new().tls_config(config).build();
     (agent, seen)
+}
+
+fn ws_base(base: &str) -> String {
+    let b = base.trim_end_matches('/');
+    if let Some(rest) = b.strip_prefix("https://") {
+        format!("wss://{rest}")
+    } else if let Some(rest) = b.strip_prefix("http://") {
+        format!("ws://{rest}")
+    } else {
+        b.to_string()
+    }
+}
+
+fn spawn_ws(
+    base: String,
+    token: String,
+    pin: Option<String>,
+    cmd_tx: Sender<Cmd>,
+    stop: Arc<AtomicBool>,
+) {
+    thread::spawn(move || {
+        let rt = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+        rt.block_on(async move {
+            use futures_util::{SinkExt, StreamExt};
+            while !stop.load(Ordering::Relaxed) {
+                let seen = Arc::new(Mutex::new(None));
+                let config = build_tls_config(pin.clone(), seen);
+                let url = format!("{}/api/v1/ws?token={}", ws_base(&base), urlencode(&token));
+                let connector = Some(tokio_tungstenite::Connector::Rustls(config));
+                if let Ok((mut ws, _)) =
+                    tokio_tungstenite::connect_async_tls_with_config(url, None, false, connector)
+                        .await
+                {
+                    loop {
+                        if stop.load(Ordering::Relaxed) {
+                            let _ = ws.close(None).await;
+                            return;
+                        }
+                        match tokio::time::timeout(Duration::from_secs(30), ws.next()).await {
+                            Ok(Some(Ok(msg))) => {
+                                if msg.is_text() || msg.is_binary() {
+                                    let _ = cmd_tx.send(Cmd::Nudge);
+                                }
+                            }
+                            Ok(Some(Err(_))) | Ok(None) => break,
+                            Err(_) => {
+                                let _ = ws
+                                    .send(tokio_tungstenite::tungstenite::Message::Ping(
+                                        Vec::new().into(),
+                                    ))
+                                    .await;
+                            }
+                        }
+                    }
+                }
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
+        });
+    });
 }
 
 fn version_gt(a: &str, b: &str) -> bool {
@@ -425,6 +500,7 @@ impl Worker {
     fn handle(&mut self, cmd: Cmd) {
         match cmd {
             Cmd::SetServer(url) => {
+                self.ws_stop.store(true, Ordering::Relaxed);
                 self.base = url.clone();
                 self.settings.server = url;
                 let pin = self.settings.tls_pins.get(&host_key(&self.base)).cloned();
@@ -457,6 +533,7 @@ impl Worker {
                 if let Ok(t) = self.token() {
                     let _ = self.call("POST", "/api/v1/auth/logout", Some(&t), Some(json!({})));
                 }
+                self.ws_stop.store(true, Ordering::Relaxed);
                 self.session = None;
                 self.send(Ev::LoggedOut);
             }
@@ -915,6 +992,10 @@ impl Worker {
                 Ok(v) => self.send(Ev::Discovered(v)),
                 Err(e) => self.err(e),
             },
+            Cmd::Nudge => {
+                self.poll();
+                self.last_poll = Instant::now();
+            }
             Cmd::CheckUpdate => match self.check_update() {
                 Ok(Some((version, mandatory, url, sha256))) => self.send(Ev::UpdateInfo {
                     version,
@@ -1081,6 +1162,21 @@ impl Worker {
         let mut v: Vec<_> = found.into_values().collect();
         v.sort_by(|a, b| a.url.cmp(&b.url));
         Ok(v)
+    }
+
+    fn start_ws(&mut self) {
+        self.ws_stop.store(true, Ordering::Relaxed);
+        let Some(s) = self.session.as_ref() else {
+            return;
+        };
+        let token = s.token.clone();
+        if token.is_empty() {
+            return;
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        self.ws_stop = stop.clone();
+        let pin = self.settings.tls_pins.get(&host_key(&self.base)).cloned();
+        spawn_ws(self.base.clone(), token, pin, self.cmd_tx.clone(), stop);
     }
 
     fn persist_pin(&mut self) {
@@ -1684,6 +1780,7 @@ impl Worker {
         self.send(Ev::LoggedIn { user: resp, offline: false });
         let convs = self.load_conversations(true)?;
         self.send(Ev::Conversations(convs));
+        self.start_ws();
         Ok(())
     }
 

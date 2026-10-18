@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { send } from "../api";
 import { state } from "../store";
+import Keyboard from "../components/Keyboard.vue";
 
 function submit() {
   send({
@@ -41,6 +42,7 @@ function finishSetup() {
     <input v-model="state.setupDisplay" placeholder="例如 总管理员" />
     <label>密码（8 位以上，含字母和数字）</label>
     <input v-model="state.setupPassword" type="password" />
+    <Keyboard v-model="state.setupPassword" />
 
     <div v-if="state.recoveryCode" class="card">
       <p class="err">恢复码（只显示一次，请抄下来离线保存）：</p>

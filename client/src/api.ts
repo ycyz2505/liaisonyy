@@ -31,6 +31,25 @@ export async function getSettings(): Promise<Settings> {
   return { server: "https://127.0.0.1:47820", class_id: null, class_name: "", last_uid: null };
 }
 
+export async function notify(title: string, body: string): Promise<void> {
+  if (!isTauri) return;
+  try {
+    await invoke("notify", { title, body });
+  } catch {
+    // notifications are best-effort
+  }
+}
+
+export async function windowVisible(): Promise<boolean> {
+  if (!isTauri) return !document.hidden;
+  try {
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    return await getCurrentWindow().isVisible();
+  } catch {
+    return !document.hidden;
+  }
+}
+
 let serverTimeMs = 0;
 let perfAnchor = 0;
 

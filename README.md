@@ -101,6 +101,17 @@ cd D:\liaisonyy
 
 首次启动会打印 `SETUP TOKEN: ...`。用客户端连接 `https://127.0.0.1:47820` 并初始化。
 
+也可在 exe 同目录放 `config.toml`：
+
+```toml
+school_name = "杨村一中"
+server_name = "杨村一中 liaisonyy"
+port = 47820
+data_dir = "data"
+```
+
+命令行 `--data-dir` / `--port` 优先于配置文件；`school_name` / `server_name` 仅在数据库中尚未设置时写入。
+
 ### 3.2 客户端
 
 把 `liaisonyy.exe` **和 `WebView2Loader.dll` 放在同一目录**（例如 `D:\liaisonyy-client\`），双击 `liaisonyy.exe`。
@@ -141,6 +152,13 @@ cd D:\liaisonyy
 | TLS 指纹固定（TOFU） | ✅ |
 | UDP 服务发现（多服务端阻断） | ✅ |
 | 签名自动更新（强制/可选） | ✅ |
+| WebSocket 即时提醒（2 秒轮询兜底） | ✅ |
+| 单实例、老板键 Ctrl+Shift+H、托盘通知 | ✅ |
+| 完整软键盘（字母/数字/符号） | ✅ |
+| 本地缓存 DPAPI 加密、原子写入 | ✅ |
+| 消息/好友申请/举报限流 | ✅ |
+| 23 并发账号压测（184 条消息） | ✅ |
+| 服务端 config.toml | ✅ |
 | X25519 + AES-256-GCM 信封加密 | ✅ |
 | 班级/名单/总管理员初始化 | ✅ |
 | 好友申请/接受/拒绝 | ✅ |
@@ -150,7 +168,7 @@ cd D:\liaisonyy
 | 管理后台（统计/审计/名单） | ✅ |
 | Tauri 客户端：托盘/右下角小窗/大关闭按钮 | ✅（CI 已验证；4.01 MB + WebView2Loader.dll） |
 | 离线队列（密文）+ 轮询 | ✅ |
-| WebSocket、老板键、完整软键盘 | ⏳ 后续版本 |
+| 服务端托盘/开机自启、内置中文输入法 | ⏳ 后续版本 |
 
 ---
 
@@ -169,8 +187,8 @@ cd D:\liaisonyy
 
 ## 6. 已知限制
 
-- 客户端每 2 秒轮询，不是 WebSocket。
-- 老板键、完整软键盘尚未实现。
+- 客户端以 WebSocket 即时提醒为主，2 秒轮询作为兜底与断线恢复。
+- 服务端托盘/开机自启、内置中文输入法尚未实现；系统输入法仍可使用。
 - 自动更新仅支持 Windows；需要构建时与服务端同时配置 `LIAISONYY_UPDATE_PUBKEY`。
 - TOFU 首次连接仍可能被中间人抢先，之后指纹变化会被拒绝；换证书需管理员手动清除指纹。
 - 客户端分发是 `exe + WebView2Loader.dll` 两个文件（用户已接受）。

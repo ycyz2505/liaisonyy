@@ -1,5 +1,5 @@
 import { reactive } from "vue";
-import { send, serverNowMs } from "./api";
+import { notify, send, serverNowMs, windowVisible } from "./api";
 import { setFileData } from "./files";
 import type {
   AccountPublic,
@@ -237,6 +237,17 @@ export function newId(): string {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+async function notifyIncoming(msgs: MessageView[]): Promise<void> {
+  if (!state.user) return;
+  const incoming = msgs.filter(
+    (m) => m.sender_uid !== state.user!.uid && m.id > 0,
+  );
+  if (incoming.length === 0) return;
+  if (await windowVisible()) return;
+  const last = incoming[incoming.length - 1];
+  await notify("liaisonyy", `${last.sender_name} 发来一条消息`);
+}
+
 export function handleEv(ev: Ev): void {
   switch (ev.type) {
     case "Bootstrap": {
@@ -322,6 +333,7 @@ export function handleEv(ev: Ev): void {
         merged.sort((a, b) => a.id - b.id);
         state.messages[conv_id] = merged;
       }
+      if (!replace) void notifyIncoming(messages);
       break;
     }
     case "MessageSent": {

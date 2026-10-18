@@ -1,6 +1,9 @@
 use axum::{
     body::Body,
-    extract::{Path, Query, State},
+    extract::{
+        ws::{Message, WebSocketUpgrade},
+        Path, Query, State,
+    },
     http::{header, HeaderMap, StatusCode},
     response::{Html, IntoResponse, Response},
     routing::{delete, get, post},
@@ -26,6 +29,8 @@ struct AppState {
     data: PathBuf,
     hmac: Arc<Vec<u8>>,
     media_key: Arc<[u8; 32]>,
+    ws: tokio::sync::broadcast::Sender<()>,
+    rate: Arc<Mutex<HashMap<(i64, String), (i64, i64)>>>,
     setup_token: Arc<Mutex<String>>,
     version: Arc<String>,
 }
@@ -211,6 +216,20 @@ fn notify(conn: &Connection, uid: i64, kind: &str, text: &str) -> rusqlite::Resu
 
 fn is_admin(a: &AuthUser) -> bool {
     a.role == "root" || a.role == "class_admin"
+}
+
+fn rate_allow(state: &AppState, uid: i64, kind: &str, limit: i64, window: i64) -> bool {
+    let mut m = state.rate.lock().unwrap();
+    let ts = now();
+    let e = m.entry((uid, kind.to_string())).or_insert((ts, 0));
+    if ts - e.0 >= window {
+        *e = (ts, 0);
+    }
+    if e.1 >= limit {
+        return false;
+    }
+    e.1 += 1;
+    true
 }
 
 fn create_session(conn: &Connection, hmac_key: &[u8], uid: i64) -> rusqlite::Result<String> {
@@ -1488,6 +1507,7 @@ async fn create_announcement(State(state): State<AppState>, headers: HeaderMap, 
     }
     audit(&tx, &state.hmac, Some(a.uid), "admin.announcement.create", Some("announcement"), Some(&id.to_string()), None)?;
     tx.commit()?;
+    let _ = state.ws.send(());
     Ok(Json(json!({"id":id})))
 }
 
@@ -1518,6 +1538,9 @@ async fn delete_announcement(State(state): State<AppState>, headers: HeaderMap, 
 
 async fn create_report(State(state): State<AppState>, headers: HeaderMap, Json(req): Json<CreateReportRequest>) -> ApiResult<Json<Value>> {
     let a = auth(&state, &headers)?;
+    if !rate_allow(&state, a.uid, "report", 10, 3600) {
+        return Err(AppError::new(StatusCode::TOO_MANY_REQUESTS, "rate", "举报过于频繁，请稍后再试"));
+    }
     let reason = req.reason.trim();
     if reason.is_empty() || reason.chars().count() > 500 {
         return Err(AppError::bad("举报理由需 1-500 字"));
@@ -1569,6 +1592,7 @@ async fn create_report(State(state): State<AppState>, headers: HeaderMap, Json(r
     }
     audit(&tx, &state.hmac, Some(a.uid), "report.create", Some(&req.target_type), Some(&req.target_id.to_string()), None)?;
     tx.commit()?;
+    let _ = state.ws.send(());
     Ok(Json(json!({"id":id})))
 }
 
@@ -1689,6 +1713,7 @@ async fn resolve_report(State(state): State<AppState>, headers: HeaderMap, Path(
     notify(&tx, reporter_uid, "report_result", &format!("你的举报已处理：{detail}"))?;
     audit(&tx, &state.hmac, Some(a.uid), "report.resolve", Some("report"), Some(&id.to_string()), Some(&detail))?;
     tx.commit()?;
+    let _ = state.ws.send(());
     Ok(Json(json!({"ok":true})))
 }
 
@@ -1735,6 +1760,7 @@ async fn admin_user_action(State(state): State<AppState>, headers: HeaderMap, Pa
     };
     audit(&tx, &state.hmac, Some(a.uid), "admin.user.action", Some("uid"), Some(&uid.to_string()), Some(&detail))?;
     tx.commit()?;
+    let _ = state.ws.send(());
     Ok(Json(json!({"ok":true})))
 }
 
@@ -1897,6 +1923,7 @@ async fn transfer_action(State(state): State<AppState>, headers: HeaderMap, Path
         )?;
         audit(&tx, &state.hmac, Some(a.uid), "transfer.reject", Some("transfer"), Some(&id.to_string()), None)?;
         tx.commit()?;
+        let _ = state.ws.send(());
         return Ok(Json(json!({"ok":true})));
     }
     if req.action != "approve" {
@@ -1967,11 +1994,15 @@ async fn transfer_action(State(state): State<AppState>, headers: HeaderMap, Path
     )?;
     audit(&tx, &state.hmac, Some(a.uid), "transfer.approve", Some("transfer"), Some(&id.to_string()), Some(&status))?;
     tx.commit()?;
+    let _ = state.ws.send(());
     Ok(Json(json!({"ok":true,"status":status})))
 }
 
 async fn create_request(State(state): State<AppState>, headers: HeaderMap, Json(req): Json<FriendRequestCreate>) -> ApiResult<Json<Value>> {
     let a = auth(&state, &headers)?;
+    if !rate_allow(&state, a.uid, "friend_request", 20, 3600) {
+        return Err(AppError::new(StatusCode::TOO_MANY_REQUESTS, "rate", "好友申请过于频繁，请稍后再试"));
+    }
     if req.to_uid == a.uid {
         return Err(AppError::bad("不能添加自己"));
     }
@@ -2015,6 +2046,7 @@ async fn create_request(State(state): State<AppState>, headers: HeaderMap, Json(
     let from_name: String = conn.query_row("SELECT display_name FROM users WHERE uid=?1", params![a.uid], |r| r.get(0))?;
     notify(&conn, req.to_uid, "friend_request", &format!("{from_name} 请求加你为好友"))?;
     audit(&conn, &state.hmac, Some(a.uid), "friend.request", Some("uid"), Some(&req.to_uid.to_string()), None)?;
+    let _ = state.ws.send(());
     Ok(Json(json!({"id":id})))
 }
 
@@ -2090,6 +2122,7 @@ async fn accept_request(State(state): State<AppState>, headers: HeaderMap, Path(
     notify(&tx, from_uid, "friend_accept", &format!("{to_name} 已同意你的好友申请"))?;
     audit(&tx, &state.hmac, Some(a.uid), "friend.accept", Some("uid"), Some(&from_uid.to_string()), None)?;
     tx.commit()?;
+    let _ = state.ws.send(());
     Ok(Json(json!({"conv_id":conv_id})))
 }
 
@@ -2212,6 +2245,9 @@ async fn send_message(State(state): State<AppState>, headers: HeaderMap, Path(co
     if req.ciphertext.len() > 65536 || req.client_msg_id.is_empty() || req.client_msg_id.len() > 64 {
         return Err(AppError::bad("消息格式不正确"));
     }
+    if !rate_allow(&state, a.uid, "message", 30, 60) {
+        return Err(AppError::new(StatusCode::TOO_MANY_REQUESTS, "rate", "发送太快，请稍后再试"));
+    }
     let conn = state.db.lock().unwrap();
     let member: i64 = conn.query_row(
         "SELECT COUNT(*) FROM conversation_members WHERE conv_id=?1 AND uid=?2",
@@ -2258,6 +2294,7 @@ async fn send_message(State(state): State<AppState>, headers: HeaderMap, Path(co
         params![a.uid, req.client_msg_id],
         |r| r.get(0),
     )?;
+    let _ = state.ws.send(());
     Ok(Json(json!({"id":id})))
 }
 
@@ -3128,8 +3165,62 @@ async fn admin_upload_update(State(state): State<AppState>, headers: HeaderMap, 
     Ok(Json(manifest))
 }
 
-async fn admin_page() -> Html<&'static str> {
-    Html(ADMIN_HTML)
+async fn admin_page() -> Response {
+    let mut r = Html(ADMIN_HTML).into_response();
+    let h = r.headers_mut();
+    h.insert(
+        header::CONTENT_SECURITY_POLICY,
+        header::HeaderValue::from_static(
+            "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'",
+        ),
+    );
+    h.insert(header::X_FRAME_OPTIONS, header::HeaderValue::from_static("DENY"));
+    h.insert(header::X_CONTENT_TYPE_OPTIONS, header::HeaderValue::from_static("nosniff"));
+    h.insert(header::REFERRER_POLICY, header::HeaderValue::from_static("no-referrer"));
+    r
+}
+
+async fn ws_handler(State(state): State<AppState>, Query(q): Query<HashMap<String, String>>, ws: WebSocketUpgrade) -> Response {
+    let token = q.get("token").cloned().unwrap_or_default();
+    if token.is_empty() {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    let h = hmac_sha256_b64(&state.hmac, token.as_bytes());
+    let uid: Option<i64> = {
+        let conn = state.db.lock().unwrap();
+        conn.query_row(
+            "SELECT s.uid FROM sessions s JOIN users u ON u.uid=s.uid WHERE s.token_hmac=?1 AND s.revoked=0 AND s.expires_at>?2 AND u.status='active'",
+            params![h, now()],
+            |r| r.get(0),
+        )
+        .optional()
+        .unwrap_or(None)
+    };
+    if uid.is_none() {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    let mut rx = state.ws.subscribe();
+    ws.on_upgrade(move |mut socket| async move {
+        loop {
+            tokio::select! {
+                r = rx.recv() => {
+                    if r.is_err() {
+                        break;
+                    }
+                    if socket.send(Message::Text("nudge".into())).await.is_err() {
+                        break;
+                    }
+                }
+                msg = socket.recv() => {
+                    match msg {
+                        Some(Ok(Message::Close(_))) | None => break,
+                        Some(Err(_)) => break,
+                        _ => {}
+                    }
+                }
+            }
+        }
+    })
 }
 
 // ---------------- main ----------------
@@ -3460,6 +3551,14 @@ fn sync_network_time() -> Option<i64> {
     None
 }
 
+#[derive(Default, serde::Deserialize)]
+struct ServerConfig {
+    school_name: Option<String>,
+    server_name: Option<String>,
+    port: Option<u16>,
+    data_dir: Option<String>,
+}
+
 fn spawn_discovery(api_port: u16) {
     std::thread::spawn(move || {
         let sock = match UdpSocket::bind(("0.0.0.0", 47821)) {
@@ -3494,11 +3593,26 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env().add_directive("info".parse()?))
         .init();
-    let mut data = std::env::current_exe()?
+    let exe_dir = std::env::current_exe()?
         .parent()
         .unwrap_or_else(|| FsPath::new("."))
-        .join("data");
-    let mut port: u16 = 47820;
+        .to_path_buf();
+    let cfg: ServerConfig = std::fs::read_to_string(exe_dir.join("config.toml"))
+        .ok()
+        .and_then(|s| toml::from_str(&s).ok())
+        .unwrap_or_default();
+    let mut data = match &cfg.data_dir {
+        Some(d) => {
+            let p = PathBuf::from(d);
+            if p.is_absolute() {
+                p
+            } else {
+                exe_dir.join(p)
+            }
+        }
+        None => exe_dir.join("data"),
+    };
+    let mut port: u16 = cfg.port.unwrap_or(47820);
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
     while i < args.len() {
@@ -3519,6 +3633,16 @@ async fn main() -> anyhow::Result<()> {
     spawn_discovery(port);
     let conn = Connection::open(data.join("liaisonyy.db"))?;
     init_db(&conn)?;
+    if let Some(v) = &cfg.school_name {
+        if get_setting(&conn, "school_name")?.is_none() {
+            set_setting(&conn, "school_name", v)?;
+        }
+    }
+    if let Some(v) = &cfg.server_name {
+        if get_setting(&conn, "server_name")?.is_none() {
+            set_setting(&conn, "server_name", v)?;
+        }
+    }
     if sync_network_time().is_none() {
         eprintln!("WARN: network time sync failed; using local clock until next retry");
     }
@@ -3529,11 +3653,14 @@ async fn main() -> anyhow::Result<()> {
     let has_root: i64 = conn.query_row("SELECT COUNT(*) FROM root_state", [], |r| r.get(0))?;
     let hmac = load_or_create_keyring(&data)?;
     let setup_token = load_or_create_setup_token(&data, has_root > 0)?;
+    let (ws_tx, _) = tokio::sync::broadcast::channel::<()>(64);
     let state = AppState {
         db: Arc::new(Mutex::new(conn)),
         data: data.clone(),
         hmac: Arc::new(hmac),
         media_key: Arc::new(load_or_create_media_key(&data)?),
+        ws: ws_tx,
+        rate: Arc::new(Mutex::new(HashMap::new())),
         setup_token: Arc::new(Mutex::new(setup_token.clone())),
         version: Arc::new(APP_VERSION.to_string()),
     };
@@ -3601,6 +3728,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/admin/students/:uid/keys", get(admin_student_keys))
         .route("/api/v1/admin/reset-keys", post(create_reset_key))
         .route("/api/v1/update/manifest", get(update_manifest))
+        .route("/api/v1/ws", get(ws_handler))
         .route("/api/v1/update/package", get(update_package))
         .route("/api/v1/admin/update/package", post(admin_upload_update))
         .route("/admin", get(admin_page))
