@@ -115,6 +115,113 @@ label {
   background: var(--bg);
 }
 
+.hint {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.update-gate {
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  background: linear-gradient(160deg, #0f766e, #115e59 60%, #0b3b38);
+}
+
+.update-card {
+  width: 100%;
+  max-height: 100%;
+  overflow-y: auto;
+  background: #fff;
+  border-radius: 16px;
+  padding: 22px 18px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.28);
+  text-align: center;
+}
+
+.update-brand {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: 0.3px;
+  margin-bottom: 14px;
+}
+
+.update-card h2 {
+  margin: 0 0 8px;
+  font-size: 18px;
+}
+
+.update-card p {
+  margin: 8px 0;
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.update-card .err {
+  text-align: left;
+}
+
+.update-card button {
+  margin-top: 8px;
+  width: 100%;
+}
+
+.update-card button.link {
+  width: auto;
+  margin-top: 12px;
+}
+
+.update-status {
+  font-size: 14px !important;
+  color: var(--text) !important;
+  font-weight: 600;
+}
+
+.update-dots {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  margin: 12px 0 4px;
+}
+
+.update-dots span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: update-bounce 1s infinite ease-in-out;
+}
+
+.update-dots span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.update-dots span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes update-bounce {
+  0%,
+  80%,
+  100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+  40% {
+    opacity: 1;
+    transform: translateY(-4px);
+  }
+}
+
+.update-close {
+  display: block;
+  margin: 10px auto 0;
+}
+
 .topbar {
   height: 52px;
   flex: 0 0 52px;
