@@ -3084,23 +3084,384 @@ async fn reset(State(state): State<AppState>, Json(req): Json<ResetRequest>) -> 
     Ok(Json(json!({"ok":true})))
 }
 
-async fn update_manifest(State(state): State<AppState>) -> Json<Value> {
-    if let Ok(bytes) = std::fs::read(state.data.join("update").join("manifest.json")) {
-        if let Ok(v) = serde_json::from_slice::<Value>(&bytes) {
-            return Json(v);
+const GITHUB_UPDATE_MANIFEST: &str =
+    "https://github.com/ycyz2505/liaisonyy/releases/latest/download/manifest.json";
+const GITHUB_UPDATE_PACKAGE: &str =
+    "https://github.com/ycyz2505/liaisonyy/releases/latest/download/liaisonyy.exe";
+const GITHUB_ACCELERATORS: &[&str] = &[
+    "",
+    "https://ghfast.top/",
+    "https://gh-proxy.com/",
+    "https://ghproxy.net/",
+    "https://github.moeyy.xyz/",
+];
+
+fn fetch_github_manifest_with_timeout(secs: u64) -> Option<Value> {
+    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(secs)).build();
+    for prefix in GITHUB_ACCELERATORS {
+        let url = format!("{prefix}{GITHUB_UPDATE_MANIFEST}");
+        if let Ok(resp) = agent.get(&url).call() {
+            if let Ok(v) = resp.into_json::<Value>() {
+                return Some(v);
+            }
         }
     }
-    Json(json!({
-        "schema": 1,
-        "version": state.version.as_str(),
-        "min_client": state.version.as_str(),
-        "files": {}
-    }))
+    None
+}
+
+fn fetch_github_manifest() -> Option<Value> {
+    fetch_github_manifest_with_timeout(6)
+}
+
+/// 服务端启动自更新用：并发尝试直连和加速源，谁先返回用谁，避免离线时逐个超时拖慢启动。
+fn fetch_github_manifest_parallel(secs: u64) -> Option<Value> {
+    let (tx, rx) = std::sync::mpsc::channel::<Value>();
+    for prefix in GITHUB_ACCELERATORS {
+        let url = format!("{prefix}{GITHUB_UPDATE_MANIFEST}");
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            let agent = ureq::AgentBuilder::new()
+                .timeout(Duration::from_secs(secs))
+                .build();
+            if let Ok(resp) = agent.get(&url).call() {
+                if let Ok(v) = resp.into_json::<Value>() {
+                    let _ = tx.send(v);
+                }
+            }
+        });
+    }
+    drop(tx);
+    rx.recv_timeout(Duration::from_secs(secs + 1)).ok()
+}
+
+fn fetch_github_asset(url: &str) -> Option<Vec<u8>> {
+    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(90)).build();
+    for prefix in GITHUB_ACCELERATORS {
+        let candidate = format!("{prefix}{url}");
+        if let Ok(resp) = agent.get(&candidate).call() {
+            let mut buf = Vec::new();
+            if resp.into_reader().read_to_end(&mut buf).is_ok()
+                && !buf.is_empty()
+                && buf.len() <= 64 * 1024 * 1024
+            {
+                return Some(buf);
+            }
+        }
+    }
+    None
+}
+
+fn fetch_github_asset_parallel(url: &str) -> Option<Vec<u8>> {
+    let (tx, rx) = std::sync::mpsc::channel::<Option<Vec<u8>>>();
+    let mut spawned = 0usize;
+    for prefix in GITHUB_ACCELERATORS {
+        let candidate = format!("{prefix}{url}");
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            let agent = ureq::AgentBuilder::new()
+                .timeout(Duration::from_secs(120))
+                .build();
+            let mut ok = None;
+            if let Ok(resp) = agent.get(&candidate).call() {
+                let mut buf = Vec::new();
+                if resp.into_reader().read_to_end(&mut buf).is_ok()
+                    && !buf.is_empty()
+                    && buf.len() <= 64 * 1024 * 1024
+                {
+                    ok = Some(buf);
+                }
+            }
+            let _ = tx.send(ok);
+        });
+        spawned += 1;
+    }
+    drop(tx);
+    let deadline = std::time::Instant::now() + Duration::from_secs(130);
+    for _ in 0..spawned {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        match rx.recv_timeout(left) {
+            Ok(Some(buf)) => return Some(buf),
+            Ok(None) => {}
+            Err(_) => break,
+        }
+    }
+    None
+}
+
+fn fetch_github_package() -> Option<Vec<u8>> {
+    fetch_github_asset(GITHUB_UPDATE_PACKAGE)
+}
+
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+fn utc_stamp() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    let (y, m, d) = civil_from_days(days);
+    format!(
+        "{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02} UTC",
+        rem / 3600,
+        (rem % 3600) / 60,
+        rem % 60
+    )
+}
+
+fn version_gt(a: &str, b: &str) -> bool {
+    fn parts(v: &str) -> Vec<u64> {
+        v.trim()
+            .trim_start_matches('v')
+            .split(|c: char| c == '.' || c == '-' || c == '+')
+            .map(|x| x.parse::<u64>().unwrap_or(0))
+            .collect()
+    }
+    let a = parts(a);
+    let b = parts(b);
+    for i in 0..a.len().max(b.len()) {
+        let x = *a.get(i).unwrap_or(&0);
+        let y = *b.get(i).unwrap_or(&0);
+        if x != y {
+            return x > y;
+        }
+    }
+    false
+}
+
+/// 服务端没有控制台也没有界面，更新状态写到程序同目录的 update-status.txt，
+/// 同目录不可写时退回到数据目录。
+fn write_update_status(exe_dir: &FsPath, data_dir: &FsPath, status: &str, detail: &str) {
+    let body = format!(
+        "liaisonyy 服务端更新状态\r\n\
+         更新时间: {}\r\n\
+         当前版本: {}\r\n\
+         状态: {}\r\n\
+         说明: {}\r\n",
+        utc_stamp(),
+        APP_VERSION,
+        status,
+        detail
+    );
+    if std::fs::write(exe_dir.join("update-status.txt"), body.as_bytes()).is_err() {
+        let _ = std::fs::create_dir_all(data_dir);
+        let _ = std::fs::write(data_dir.join("update-status.txt"), body.as_bytes());
+    }
+    tracing::info!("server update: {status} - {detail}");
+}
+
+fn install_server_update(exe_dir: &FsPath, bytes: &[u8]) -> anyhow::Result<()> {
+    let exe = std::env::current_exe()?;
+    let file_name = exe
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("liaisonyy-server.exe")
+        .to_string();
+    let new_name = if cfg!(windows) {
+        "liaisonyy-server-new.exe"
+    } else {
+        "liaisonyy-server-new"
+    };
+    let new_path = exe_dir.join(new_name);
+    std::fs::write(&new_path, bytes)?;
+
+    #[cfg(windows)]
+    {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        let arg_line = args
+            .iter()
+            .map(|a| format!("\"{}\"", a.replace('"', "\"\"")))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let bat = exe_dir.join(format!(
+            "liaisonyy-server-update-{}.bat",
+            std::process::id()
+        ));
+        let script = format!(
+            "@echo off\r\n\
+             setlocal\r\n\
+             set n=0\r\n\
+             :retry\r\n\
+             set /a n+=1\r\n\
+             if %n% gtr 60 exit /b 1\r\n\
+             ping -n 2 127.0.0.1 >nul\r\n\
+             move /y \"%~dp0{new_name}\" \"%~dp0{file_name}\" >nul 2>nul\r\n\
+             if errorlevel 1 goto retry\r\n\
+             start \"\" \"%~dp0{file_name}\" {arg_line}\r\n\
+             del \"%~f0\"\r\n"
+        );
+        std::fs::write(&bat, script)?;
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new("cmd")
+            .arg("/C")
+            .arg(&bat)
+            .current_dir(exe_dir)
+            .creation_flags(0x0800_0000)
+            .spawn()?;
+        std::process::exit(0)
+    }
+
+    #[cfg(not(windows))]
+    {
+        // 运行中的可执行文件可以原子替换，随后用同一组参数 exec 新版本。
+        std::fs::rename(&new_path, &exe)?;
+        use std::os::unix::process::CommandExt;
+        let err = std::process::Command::new(&exe)
+            .args(std::env::args().skip(1))
+            .exec();
+        Err(anyhow::anyhow!("exec new server failed: {err}"))
+    }
+}
+
+fn try_self_update(exe_dir: &FsPath, data_dir: &FsPath) {
+    if std::env::var("LIAISONYY_NO_SELF_UPDATE").is_ok() {
+        return;
+    }
+    write_update_status(exe_dir, data_dir, "正在检查更新", "正在连接 GitHub Releases 检查服务端版本…");
+    let Some(manifest) = fetch_github_manifest_parallel(3) else {
+        write_update_status(
+            exe_dir,
+            data_dir,
+            "检查更新失败",
+            "无法连接 GitHub Releases（离线或网络受限），服务继续使用当前版本，下次启动会再次尝试。",
+        );
+        return;
+    };
+    let version = manifest
+        .get("version")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if version.is_empty() {
+        write_update_status(
+            exe_dir,
+            data_dir,
+            "检查更新失败",
+            "更新清单缺少版本号，已忽略；服务继续使用当前版本。",
+        );
+        return;
+    }
+    if !version_gt(&version, APP_VERSION) {
+        write_update_status(
+            exe_dir,
+            data_dir,
+            "已是最新版本",
+            &format!("远程版本 {version}，无需更新。"),
+        );
+        return;
+    }
+    let key = if cfg!(windows) { "windows" } else { "linux" };
+    let Some(srv) = manifest.get("server").and_then(|s| s.get(key)) else {
+        write_update_status(
+            exe_dir,
+            data_dir,
+            "发现新版本但缺少服务端安装包",
+            &format!("远程版本 {version}，更新清单中没有 server.{key}，服务继续使用当前版本。"),
+        );
+        return;
+    };
+    let url = srv.get("url").and_then(|v| v.as_str()).unwrap_or("");
+    let sha = srv.get("sha256").and_then(|v| v.as_str()).unwrap_or("");
+    if url.is_empty() || sha.is_empty() {
+        write_update_status(
+            exe_dir,
+            data_dir,
+            "发现新版本但安装包信息不完整",
+            &format!("远程版本 {version}，服务继续使用当前版本。"),
+        );
+        return;
+    }
+    write_update_status(
+        exe_dir,
+        data_dir,
+        "正在下载更新",
+        &format!("发现新版本 {version}，正在从 GitHub Releases（含加速源）下载服务端…"),
+    );
+    let Some(bytes) = fetch_github_asset_parallel(url) else {
+        write_update_status(
+            exe_dir,
+            data_dir,
+            "更新下载失败",
+            &format!("新版本 {version} 下载失败，服务继续使用当前版本，下次启动会再次尝试。"),
+        );
+        return;
+    };
+    if sha256_b64(&bytes) != sha {
+        write_update_status(
+            exe_dir,
+            data_dir,
+            "更新校验失败",
+            "下载文件的 SHA-256 与清单不一致，已丢弃；服务继续使用当前版本。",
+        );
+        return;
+    }
+    write_update_status(
+        exe_dir,
+        data_dir,
+        "校验通过，正在安装并重启",
+        &format!("新版本 {version} 已下载并通过 SHA-256 校验，服务即将自动重启。"),
+    );
+    if let Err(e) = install_server_update(exe_dir, &bytes) {
+        write_update_status(
+            exe_dir,
+            data_dir,
+            "更新安装失败",
+            &format!("{e:#}；服务继续使用当前版本，下次启动会再次尝试。"),
+        );
+    }
+}
+
+async fn update_manifest(State(state): State<AppState>) -> ApiResult<Json<Value>> {
+    if std::env::var("LIAISONYY_UPDATE_OFFLINE").is_err() {
+        if let Ok(Some(mut v)) = tokio::task::spawn_blocking(fetch_github_manifest).await {
+            // 老客户端仍从服务端读清单：把包地址改为服务端中转，避免它们的自签证书固定拒绝 GitHub 证书。
+            if let Some(w) = v
+                .get_mut("files")
+                .and_then(|f| f.get_mut("windows"))
+                .and_then(|w| w.as_object_mut())
+            {
+                w.insert("url".to_string(), json!("/api/v1/update/package"));
+            }
+            return Ok(Json(v));
+        }
+    }
+    if let Ok(bytes) = std::fs::read(state.data.join("update").join("manifest.json")) {
+        if let Ok(v) = serde_json::from_slice::<Value>(&bytes) {
+            return Ok(Json(v));
+        }
+    }
+    Err(AppError::new(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "update_unavailable",
+        "无法从 GitHub Releases 获取更新清单，请检查服务端网络后重试",
+    ))
 }
 
 async fn update_package(State(state): State<AppState>) -> ApiResult<Response> {
-    let bytes = std::fs::read(state.data.join("update").join("package.exe"))
-        .map_err(|_| AppError::not_found("更新包不存在"))?;
+    let mut bytes = None;
+    if std::env::var("LIAISONYY_UPDATE_OFFLINE").is_err() {
+        bytes = tokio::task::spawn_blocking(fetch_github_package)
+            .await
+            .ok()
+            .flatten();
+    }
+    let bytes = match bytes {
+        Some(b) => b,
+        None => std::fs::read(state.data.join("update").join("package.exe"))
+            .map_err(|_| AppError::not_found("更新包不存在"))?,
+    };
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/octet-stream")
@@ -3747,6 +4108,7 @@ async fn run() -> anyhow::Result<()> {
             )
             .try_init();
     }
+    try_self_update(&exe_dir, &data);
     apply_pending_restore(&data)?;
     spawn_discovery(port);
     let conn = Connection::open(data.join("liaisonyy.db"))?;

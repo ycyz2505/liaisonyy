@@ -26,6 +26,10 @@ export async function quitApp(): Promise<void> {
   if (isTauri) await invoke("quit_app");
 }
 
+export async function hideWindow(): Promise<void> {
+  if (isTauri) await invoke("hide_window");
+}
+
 export async function getSettings(): Promise<Settings> {
   if (isTauri) return await invoke<Settings>("get_settings");
   return { server: "https://127.0.0.1:47820", class_id: null, class_name: "", last_uid: null };

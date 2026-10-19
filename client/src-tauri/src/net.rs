@@ -14,6 +14,16 @@ use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, Server
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
 
+const GITHUB_MANIFEST_URL: &str =
+    "https://github.com/ycyz2505/liaisonyy/releases/latest/download/manifest.json";
+const GITHUB_ACCELERATORS: &[&str] = &[
+    "",
+    "https://ghfast.top/",
+    "https://gh-proxy.com/",
+    "https://ghproxy.net/",
+    "https://github.moeyy.xyz/",
+];
+
 #[derive(Clone, Debug, Serialize)]
 pub struct MessageView {
     pub id: i64,
@@ -179,6 +189,9 @@ pub enum Ev {
     Discovered(Vec<DiscoveredServer>),
     UpdateInfo { version: String, mandatory: bool, url: String, sha256: String },
     UpdateNone,
+    UpdateFailed(String),
+    UpdateProgress(String),
+    UpdateApplyFailed(String),
     Toast(String),
     Error(String),
     Offline(bool),
@@ -217,6 +230,7 @@ impl Drop for Session {
 
 struct Worker {
     agent: ureq::Agent,
+    public_agent: ureq::Agent,
     pin_seen: Arc<Mutex<Option<String>>>,
     cmd_tx: Sender<Cmd>,
     ws_stop: Arc<AtomicBool>,
@@ -238,8 +252,10 @@ pub fn spawn(settings: Settings, cache: Cache) -> (Sender<Cmd>, Receiver<Ev>) {
         let base = settings.server.clone();
         let pin = settings.tls_pins.get(&host_key(&base)).cloned();
         let (agent, pin_seen) = make_agent(pin);
+        let public_agent = ureq::AgentBuilder::new().build();
         let mut w = Worker {
             agent,
+            public_agent,
             pin_seen,
             cmd_tx: cmd_tx_worker,
             ws_stop: Arc::new(AtomicBool::new(false)),
@@ -1004,11 +1020,11 @@ impl Worker {
                     sha256,
                 }),
                 Ok(None) => self.send(Ev::UpdateNone),
-                Err(e) => self.err(e),
+                Err(e) => self.send(Ev::UpdateFailed(e)),
             },
             Cmd::ApplyUpdate { url, sha256 } => {
                 if let Err(e) = self.apply_update(&url, &sha256) {
-                    self.err(e);
+                    self.send(Ev::UpdateApplyFailed(e));
                 }
             }
             Cmd::AdminUpdatePackage { data, version, min_client, signature, url } => {
@@ -1036,80 +1052,151 @@ impl Worker {
     }
 
     fn check_update(&self) -> Result<Option<(String, bool, String, String)>, String> {
-        let v = self.call("GET", "/api/v1/update/manifest", None, None)?;
+        // 并发尝试直连与各加速源，谁先返回有效清单就用谁，避免离线时逐个超时。
+        let (tx, rx) = mpsc::channel::<Value>();
+        for prefix in GITHUB_ACCELERATORS {
+            let url = format!("{prefix}{GITHUB_MANIFEST_URL}");
+            let agent = self.public_agent.clone();
+            let tx = tx.clone();
+            thread::spawn(move || {
+                if let Ok(resp) = agent.get(&url).timeout(Duration::from_secs(8)).call() {
+                    if let Ok(v) = resp.into_json::<Value>() {
+                        let _ = tx.send(v);
+                    }
+                }
+            });
+        }
+        drop(tx);
+        let manifest = rx.recv_timeout(Duration::from_secs(9)).ok();
+        let v = match manifest {
+            Some(v) => v,
+            None => match self.call("GET", "/api/v1/update/manifest", None, None) {
+                Ok(v) => v,
+                Err(e) => {
+                    return Err(format!(
+                        "无法连接更新服务器（已尝试直连与 GitHub 加速源）：{e}"
+                    ))
+                }
+            },
+        };
         let version = v.get("version").and_then(|x| x.as_str()).unwrap_or("").to_string();
         let min_client = v.get("min_client").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        if version.is_empty() {
+            return Err("更新清单无效（缺少版本号）".to_string());
+        }
+        if !version_gt(&version, APP_VERSION) {
+            return Ok(None);
+        }
         let file = &v["files"]["windows"];
         let url = file.get("url").and_then(|x| x.as_str()).unwrap_or("").to_string();
         let sha = file.get("sha256").and_then(|x| x.as_str()).unwrap_or("").to_string();
-        if version.is_empty() || url.is_empty() || sha.is_empty() {
-            return Ok(None);
-        }
-        let Some(pk_b64) = option_env!("LIAISONYY_UPDATE_PUBKEY").filter(|s| !s.is_empty()) else {
-            return Ok(None);
-        };
-        let pk_raw = b64d(pk_b64).map_err(|_| "更新公钥格式不正确".to_string())?;
-        if pk_raw.len() != 32 {
-            return Err("更新公钥格式不正确".into());
-        }
-        let mut pk = [0u8; 32];
-        pk.copy_from_slice(&pk_raw);
-        let vk = ed25519_dalek::VerifyingKey::from_bytes(&pk)
-            .map_err(|_| "更新公钥无效".to_string())?;
-        let sig_raw = b64d(v.get("signature").and_then(|x| x.as_str()).unwrap_or(""))
-            .map_err(|_| "更新签名格式不正确".to_string())?;
-        let sig = ed25519_dalek::Signature::from_slice(&sig_raw)
-            .map_err(|_| "更新签名格式不正确".to_string())?;
-        let msg = format!("liaisonyy-update-v1|{version}|{min_client}|{sha}");
-        vk.verify_strict(msg.as_bytes(), &sig)
-            .map_err(|_| "更新签名校验失败".to_string())?;
-        if !version_gt(&version, APP_VERSION) {
-            return Ok(None);
+        if url.is_empty() || sha.is_empty() {
+            return Err("更新清单缺少安装包地址或校验值".to_string());
         }
         let mandatory = version_gt(&min_client, APP_VERSION);
         Ok(Some((version, mandatory, url, sha)))
     }
 
     fn apply_update(&self, url: &str, sha: &str) -> Result<(), String> {
-        let full = if url.starts_with("http://") || url.starts_with("https://") {
-            url.to_string()
+        let candidates: Vec<(bool, String)> = if url.starts_with("https://github.com/") {
+            GITHUB_ACCELERATORS
+                .iter()
+                .map(|prefix| (true, format!("{prefix}{url}")))
+                .collect()
+        } else if url.starts_with("http://") || url.starts_with("https://") {
+            vec![(true, url.to_string())]
         } else {
-            format!("{}{}", self.base.trim_end_matches('/'), url)
+            vec![(
+                false,
+                format!("{}{}", self.base.trim_end_matches('/'), url),
+            )]
         };
-        let resp = self
-            .agent
-            .get(&full)
-            .call()
-            .map_err(|e| format!("下载更新失败: {e}"))?;
-        let mut buf = Vec::new();
-        resp.into_reader()
-            .read_to_end(&mut buf)
-            .map_err(|e| e.to_string())?;
-        if buf.len() > 32 * 1024 * 1024 {
-            return Err("更新包过大".into());
+        self.send(Ev::UpdateProgress(
+            "正在下载更新（自动尝试直连与 GitHub 加速源）…".to_string(),
+        ));
+        // 并发下载：直连可能被墙而长时间挂起，加速源可先完成；校验通过的第一份生效。
+        let (tx, rx) = mpsc::channel::<Option<Vec<u8>>>();
+        let mut spawned = 0usize;
+        for (public, candidate) in candidates {
+            let agent = if public {
+                self.public_agent.clone()
+            } else {
+                self.agent.clone()
+            };
+            let tx = tx.clone();
+            let sha = sha.to_string();
+            thread::spawn(move || {
+                let mut ok = None;
+                if let Ok(resp) = agent
+                    .get(&candidate)
+                    .timeout(Duration::from_secs(180))
+                    .call()
+                {
+                    let mut buf = Vec::new();
+                    if resp.into_reader().read_to_end(&mut buf).is_ok()
+                        && !buf.is_empty()
+                        && buf.len() <= 64 * 1024 * 1024
+                        && sha256_b64(&buf) == sha
+                    {
+                        ok = Some(buf);
+                    }
+                }
+                let _ = tx.send(ok);
+            });
+            spawned += 1;
         }
-        if sha256_b64(&buf) != sha {
-            return Err("更新包校验失败".into());
+        drop(tx);
+        let deadline = Instant::now() + Duration::from_secs(190);
+        let mut payload: Option<Vec<u8>> = None;
+        for _ in 0..spawned {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match rx.recv_timeout(left) {
+                Ok(Some(buf)) => {
+                    payload = Some(buf);
+                    break;
+                }
+                Ok(None) => {}
+                Err(_) => break,
+            }
         }
+        let buf = payload
+            .ok_or_else(|| "更新包下载或校验失败（所有下载源均不可用）".to_string())?;
+        self.send(Ev::UpdateProgress(
+            "更新包校验通过，正在安装…".to_string(),
+        ));
         #[cfg(windows)]
         {
             let exe = std::env::current_exe().map_err(|e| e.to_string())?;
             let dir = exe.parent().ok_or_else(|| "无法定位程序目录".to_string())?;
+            let file_name = exe
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("liaisonyy.exe")
+                .to_string();
             std::fs::write(dir.join("liaisonyy-new.exe"), &buf).map_err(|e| e.to_string())?;
-            let script = "@echo off\r\n\
-                :retry\r\n\
-                timeout /t 2 /nobreak >nul\r\n\
-                move /y \"%~dp0liaisonyy-new.exe\" \"%~dp0liaisonyy.exe\"\r\n\
-                if errorlevel 1 goto retry\r\n\
-                start \"\" \"%~dp0liaisonyy.exe\"\r\n\
-                del \"%~f0\"\r\n";
-            std::fs::write(dir.join("liaisonyy-update.bat"), script).map_err(|e| e.to_string())?;
+            let script = format!(
+                "@echo off\r\n\
+                 :retry\r\n\
+                 ping -n 3 127.0.0.1 >nul\r\n\
+                 move /y \"%~dp0liaisonyy-new.exe\" \"%~dp0{file_name}\" >nul 2>nul\r\n\
+                 if errorlevel 1 goto retry\r\n\
+                 start \"\" \"%~dp0{file_name}\"\r\n\
+                 del \"%~f0\"\r\n"
+            );
+            let bat = dir.join(format!("liaisonyy-update-{}.bat", std::process::id()));
+            std::fs::write(&bat, script).map_err(|e| e.to_string())?;
+            self.send(Ev::UpdateProgress("更新已就绪，正在重启客户端…".to_string()));
+            use std::os::windows::process::CommandExt;
             std::process::Command::new("cmd")
-                .args(["/C", "start", "", "liaisonyy-update.bat"])
+                .arg("/C")
+                .arg(&bat)
                 .current_dir(dir)
+                .creation_flags(0x0800_0000)
                 .spawn()
                 .map_err(|e| e.to_string())?;
-            std::process::exit(0);
+            // 留出一点时间让「正在重启」显示到界面上。
+            thread::sleep(Duration::from_millis(1200));
+            std::process::exit(0)
         }
         #[cfg(not(windows))]
         {

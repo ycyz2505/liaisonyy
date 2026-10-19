@@ -2,6 +2,21 @@
 
 本项目遵循「每次改动同步更新文档/设计稿/更新日志」的约定。
 
+## v0.3.2（2026-10-19）
+
+### 自动更新改由 GitHub Releases 提供（客户端 + 服务端）
+
+- 客户端从 `https://github.com/ycyz2505/liaisonyy/releases/latest/download/manifest.json` 读取版本与安装包地址，安装包从对应 Release 下载；不再依赖 Cloudflare Pages，也不再使用 Ed25519 签名密钥。
+- 内置 GitHub 加速源：`ghfast.top`、`gh-proxy.com`、`ghproxy.net`、`github.moeyy.xyz`；清单与安装包都并发尝试直连和加速源，谁先成功用谁，避免被墙时逐个超时。
+- **客户端启动强制检查更新**：每次启动都检查；有更新必须更新成功才能进入；检查失败只能重试，不能跳过。
+- **更新过程有 UI**：小窗显示「检查更新 / 下载 / 校验 / 安装 / 重启」阶段；更新包下载完成后校验 SHA-256，再自替换并重启。
+- **小窗绝不自动出现**：取消首次运行自动显示和单实例回调自动显示；只能点托盘图标（或 `Ctrl+Shift+H` / 托盘菜单）打开，界面提供「关闭窗口」按钮，随时可关。
+- **服务端自动更新**：服务端启动时检查同一份清单中的 `server.windows` / `server.linux`，发现新版本会下载、校验 SHA-256、自替换并重启（Windows 用隐藏批处理，Linux 原子替换后 `exec`）。服务端没有命令行/UI，状态写入程序同目录的 `update-status.txt`（不可写时退回数据目录），详细日志写入 `data/logs/server.log`；更新失败不阻止本次启动，下次启动再试。
+- 服务端 `/api/v1/update/manifest` 与 `/api/v1/update/package` 继续代理 GitHub Releases 供老客户端使用；GitHub 不可达时返回 503，不再返回“伪最新”清单。
+- `publish-update` 工作流同时构建并上传客户端、Windows 服务端、Linux 服务端，生成含 `files.windows`、`server.windows`、`server.linux` 的 `manifest.json`。
+- 测试环境设置 `LIAISONYY_NO_SELF_UPDATE=1`，避免测试服务端被自动更新替换。
+- 版本 0.3.2。0.3.1 及更早客户端需要手动安装一次 0.3.2，之后即可自动更新。
+
 ## v0.3.1（2026-10-18）
 
 ### 回退自带中文键盘
@@ -14,7 +29,7 @@
 
 - 登录后「我」页新增 **liaisonyy 用户 QQ 群 1130941127**，附说明与「复制群号」按钮。
 - **小窗大小自适应**：高度 = 当前屏幕逻辑高度 / 1.7（限制 420–700 逻辑像素），宽度 = 高度 / 1.79；按 DPI 缩放换算物理像素，低分辨率/高缩放时不再超出屏幕。
-- 新增 `docs/CF-Pages自动更新指南.md`：用 Cloudflare Pages 托管更新包、服务端提供签名清单的完整步骤。
+- 新增 `docs/GitHub-Releases自动更新指南.md`：用 GitHub Releases 托管清单/客户端/服务端、内置加速源与强制更新的完整说明。
 
 ## v0.3.0（2026-10-18）
 

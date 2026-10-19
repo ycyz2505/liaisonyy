@@ -453,6 +453,9 @@ export type Ev =
   | { type: "Discovered"; data: DiscoveredServer[] }
   | { type: "UpdateInfo"; data: { version: string; mandatory: boolean; url: string; sha256: string } }
   | { type: "UpdateNone" }
+  | { type: "UpdateFailed"; data: string }
+  | { type: "UpdateProgress"; data: string }
+  | { type: "UpdateApplyFailed"; data: string }
   | { type: "Toast"; data: string }
   | { type: "Error"; data: string }
   | { type: "Offline"; data: boolean };

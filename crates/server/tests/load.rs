@@ -68,6 +68,7 @@ fn load_23_concurrent() {
     let _guard = ServerGuard(
         Command::new(exe)
             .args(["--data-dir", dir.to_str().unwrap(), "--port", &port.to_string()])
+            .env("LIAISONYY_NO_SELF_UPDATE", "1")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()

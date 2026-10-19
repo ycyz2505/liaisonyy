@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted } from "vue";
-import { getSettings, onEv, send, syncServerTime } from "./api";
+import { getSettings, hideWindow, onEv, quitApp, send, syncServerTime } from "./api";
 import { handleEv, state } from "./store";
 import TopBar from "./components/TopBar.vue";
 import WelcomePage from "./pages/WelcomePage.vue";
@@ -26,6 +26,9 @@ let noticeTimer: number | undefined;
 
 onMounted(async () => {
   unlisten = await onEv(handleEv);
+  state.updateGate = "checking";
+  state.updateError = "";
+  send({ type: "CheckUpdate" });
   const s = await getSettings();
   state.serverInput = s.server;
   state.classId = s.class_id;
@@ -52,59 +55,85 @@ onBeforeUnmount(() => {
 
 function applyUpdate() {
   const u = state.updateInfo;
-  if (!u) return;
+  if (!u || state.updateApplying) return;
+  state.updateApplying = true;
+  state.updateProgress = "正在准备更新…";
+  state.error = "";
   send({ type: "ApplyUpdate", data: { url: u.url, sha256: u.sha256 } });
+}
+
+function retryUpdate() {
+  state.updateGate = "checking";
+  state.updateError = "";
+  state.updateApplying = false;
+  state.updateProgress = "";
+  state.error = "";
+  send({ type: "CheckUpdate" });
 }
 </script>
 
 <template>
   <div class="app">
-    <TopBar />
-    <main
-      class="content"
-      :class="{ 'content-fixed': state.page === 'Main' || state.page === 'Chat' }"
-    >
-      <WelcomePage v-if="state.page === 'Welcome'" />
-      <SetupPage v-else-if="state.page === 'Setup'" />
-      <AccountsPage v-else-if="state.page === 'Accounts'" />
-      <LoginPage v-else-if="state.page === 'Login'" />
-      <RegisterPage v-else-if="state.page === 'Register'" />
-      <MainPage v-else-if="state.page === 'Main'" />
-      <ChatPage v-else-if="state.page === 'Chat'" />
-      <SettingsPage v-else-if="state.page === 'Settings'" />
-      <AdminPage v-else-if="state.page === 'Admin'" />
-      <ResetPage v-else-if="state.page === 'Reset'" />
-      <ProfilePage v-else-if="state.page === 'Profile'" />
-      <SecurityPage v-else-if="state.page === 'Security'" />
-      <UserProfilePage v-else-if="state.page === 'UserProfile'" />
-      <NotificationsPage v-else-if="state.page === 'Notifications'" />
-      <AnnouncementsPage v-else-if="state.page === 'Announcements'" />
-    </main>
-    <div v-if="state.toast" class="toast">{{ state.toast }}</div>
-    <div v-if="state.error" class="error-bar">
-      <span>{{ state.error }}</span>
-      <button class="link" @click="state.error = ''">×</button>
-    </div>
-
-    <div v-if="state.updateInfo" class="modal-mask" style="z-index: 30">
-      <div class="modal">
-        <h3 style="margin-top: 0">发现新版本 {{ state.updateInfo.version }}</h3>
-        <p class="small">
-          {{
-            state.updateInfo.mandatory
-              ? "当前版本已停止支持，必须更新后才能继续使用。"
-              : "建议更新到最新版本。"
-          }}
-        </p>
-        <button class="primary" @click="applyUpdate">下载并更新</button>
-        <button
-          v-if="!state.updateInfo.mandatory"
-          style="margin-top: 8px"
-          @click="state.updateInfo = null"
-        >
-          稍后
-        </button>
+    <div v-if="state.updateGate !== 'ready'" class="update-gate">
+      <div class="update-card">
+        <div class="update-brand">liaisonyy</div>
+        <template v-if="state.updateGate === 'checking'">
+          <p class="update-status">正在检查更新…</p>
+          <div class="update-dots"><span></span><span></span><span></span></div>
+        </template>
+        <template v-else-if="state.updateGate === 'required'">
+          <h2>发现新版本 {{ state.updateInfo?.version }}</h2>
+          <p>必须更新成功后才能进入 liaisonyy。</p>
+          <template v-if="state.updateApplying">
+            <p class="update-status">{{ state.updateProgress || "正在更新…" }}</p>
+            <div class="update-dots"><span></span><span></span><span></span></div>
+            <p class="hint">更新过程中请保持网络连接，不要关闭程序。</p>
+          </template>
+          <template v-else>
+            <button class="primary" @click="applyUpdate">下载并更新</button>
+            <p class="hint">下载会自动尝试直连与 GitHub 加速源；请保持网络连接。</p>
+          </template>
+          <p v-if="state.error" class="err">{{ state.error }}</p>
+        </template>
+        <template v-else>
+          <h2>检查更新失败</h2>
+          <p class="err">{{ state.updateError || "无法连接更新服务器" }}</p>
+          <button class="primary" @click="retryUpdate">重试</button>
+          <button @click="quitApp">退出</button>
+          <p class="hint">启动时必须成功检查更新；请检查网络后重试。</p>
+        </template>
+        <button class="link update-close" @click="hideWindow">关闭窗口</button>
+        <p class="hint">关闭后程序仍在后台运行，点击托盘图标可随时重新打开。</p>
       </div>
     </div>
+
+    <template v-else>
+      <TopBar />
+      <main
+        class="content"
+        :class="{ 'content-fixed': state.page === 'Main' || state.page === 'Chat' }"
+      >
+        <WelcomePage v-if="state.page === 'Welcome'" />
+        <SetupPage v-else-if="state.page === 'Setup'" />
+        <AccountsPage v-else-if="state.page === 'Accounts'" />
+        <LoginPage v-else-if="state.page === 'Login'" />
+        <RegisterPage v-else-if="state.page === 'Register'" />
+        <MainPage v-else-if="state.page === 'Main'" />
+        <ChatPage v-else-if="state.page === 'Chat'" />
+        <SettingsPage v-else-if="state.page === 'Settings'" />
+        <AdminPage v-else-if="state.page === 'Admin'" />
+        <ResetPage v-else-if="state.page === 'Reset'" />
+        <ProfilePage v-else-if="state.page === 'Profile'" />
+        <SecurityPage v-else-if="state.page === 'Security'" />
+        <UserProfilePage v-else-if="state.page === 'UserProfile'" />
+        <NotificationsPage v-else-if="state.page === 'Notifications'" />
+        <AnnouncementsPage v-else-if="state.page === 'Announcements'" />
+      </main>
+      <div v-if="state.toast" class="toast">{{ state.toast }}</div>
+      <div v-if="state.error" class="error-bar">
+        <span>{{ state.error }}</span>
+        <button class="link" @click="state.error = ''">×</button>
+      </div>
+    </template>
   </div>
 </template>

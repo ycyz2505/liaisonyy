@@ -1,5 +1,7 @@
 # 用 Cloudflare Pages 做客户端自动更新
 
+> **已废弃（2026-10-19）**：0.3.2 起自动更新已改为 **GitHub Releases**（客户端 + 服务端），不再需要 Ed25519 签名密钥，也不再从 CF Pages 下载。本页仅作历史记录，请勿按此配置。当前方案见 [GitHub-Releases自动更新指南](GitHub-Releases自动更新指南.md)。
+
 liaisonyy 的自动更新由两部分组成：
 
 1. **清单（manifest）**：客户端从当前服务端 `GET /api/v1/update/manifest` 获取；里面有版本号、最低版本、Ed25519 签名和更新包地址。

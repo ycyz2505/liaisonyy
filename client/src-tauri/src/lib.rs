@@ -42,6 +42,13 @@ fn quit_app(app: AppHandle) {
 }
 
 #[tauri::command]
+fn hide_window(app: AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.hide();
+    }
+}
+
+#[tauri::command]
 fn get_settings() -> store::Settings {
     store::load_settings()
 }
@@ -110,8 +117,8 @@ fn tray_icon_rgba() -> Vec<u8> {
 
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            show_window(app);
+        .plugin(tauri_plugin_single_instance::init(|_app, _args, _cwd| {
+            // 小窗只能由用户点击托盘图标（或快捷键/托盘菜单）打开，启动时不自动出现。
         }))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -126,7 +133,6 @@ pub fn run() {
         .setup(|app| {
             let settings = store::load_settings();
             let cache = store::load_cache();
-            let first_run = settings.class_id.is_none();
             let (cmd_tx, ev_rx) = net::spawn(settings, cache);
             app.manage(AppState { cmd: Mutex::new(cmd_tx) });
 
@@ -165,15 +171,13 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            if first_run {
-                show_window(app.handle());
-            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             send_cmd,
             panic_logout,
             quit_app,
+            hide_window,
             get_settings,
             get_server_time,
             notify

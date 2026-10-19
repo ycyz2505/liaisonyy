@@ -5,6 +5,21 @@ on:
     branches: ["**"]
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      publish_update:
+        description: "Publish client + server update assets to GitHub Releases"
+        required: false
+        default: false
+        type: boolean
+      version:
+        description: "Version, e.g. 0.3.2 (required when publish_update)"
+        required: false
+        type: string
+      min_client:
+        description: "Minimum client version for forced update"
+        required: false
+        default: "0.3.0"
+        type: string
 
 permissions:
   contents: write
@@ -68,8 +83,6 @@ jobs:
         run: npm ci
       - name: Build Tauri client
         working-directory: client
-        env:
-          LIAISONYY_UPDATE_PUBKEY: ${{ secrets.LIAISONYY_UPDATE_PUBKEY }}
         run: npm run build:tauri
       - name: Collect client artifacts
         shell: pwsh
@@ -156,9 +169,100 @@ jobs:
           path: target/x86_64-unknown-linux-musl/release/liaisonyy-server
           if-no-files-found: error
 
+  publish-update:
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish_update)
+    needs: [client, server-windows, server-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: liaisonyy-client-windows
+          path: artifact
+      - uses: actions/download-artifact@v4
+        with:
+          name: liaisonyy-server-windows
+          path: artifact-server-windows
+      - uses: actions/download-artifact@v4
+        with:
+          name: liaisonyy-server-linux
+          path: artifact-server-linux
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="${{ inputs.version }}"
+          fi
+          if [[ -z "$VERSION" ]]; then
+            echo "version is required" >&2
+            exit 1
+          fi
+          MIN="${{ inputs.min_client }}"
+          if [[ -z "$MIN" ]]; then MIN="0.3.0"; fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "min=$MIN" >> "$GITHUB_OUTPUT"
+      - name: Build manifest
+        shell: bash
+        run: |
+          set -e
+          mkdir -p release
+          cp artifact/liaisonyy.exe release/liaisonyy.exe
+          cp artifact-server-windows/liaisonyy-server.exe release/liaisonyy-server.exe
+          cp artifact-server-linux/liaisonyy-server release/liaisonyy-server
+          CLIENT_SHA=$(openssl dgst -sha256 -binary release/liaisonyy.exe | base64 -w0)
+          CLIENT_SIZE=$(stat -c%s release/liaisonyy.exe)
+          WIN_SHA=$(openssl dgst -sha256 -binary release/liaisonyy-server.exe | base64 -w0)
+          WIN_SIZE=$(stat -c%s release/liaisonyy-server.exe)
+          LINUX_SHA=$(openssl dgst -sha256 -binary release/liaisonyy-server | base64 -w0)
+          LINUX_SIZE=$(stat -c%s release/liaisonyy-server)
+          BASE="https://github.com/ycyz2505/liaisonyy/releases/download/v${{ steps.ver.outputs.version }}"
+          cat > release/manifest.json <<EOF
+          {
+            "schema": 1,
+            "version": "${{ steps.ver.outputs.version }}",
+            "min_client": "${{ steps.ver.outputs.min }}",
+            "files": {
+              "windows": {
+                "url": "$BASE/liaisonyy.exe",
+                "sha256": "$CLIENT_SHA",
+                "size": $CLIENT_SIZE
+              }
+            },
+            "server": {
+              "windows": {
+                "url": "$BASE/liaisonyy-server.exe",
+                "sha256": "$WIN_SHA",
+                "size": $WIN_SIZE
+              },
+              "linux": {
+                "url": "$BASE/liaisonyy-server",
+                "sha256": "$LINUX_SHA",
+                "size": $LINUX_SIZE
+              }
+            }
+          }
+          EOF
+          cat release/manifest.json
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          TAG="v${{ steps.ver.outputs.version }}"
+          ASSETS="release/liaisonyy.exe release/manifest.json release/liaisonyy-server.exe release/liaisonyy-server"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" $ASSETS --clobber
+          else
+            gh release create "$TAG" $ASSETS \
+              --title "liaisonyy ${{ steps.ver.outputs.version }}" \
+              --notes "liaisonyy ${{ steps.ver.outputs.version }}"
+          fi
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [client, server-windows, server-linux]
+    needs: [client, server-windows, server-linux, publish-update]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -168,3 +272,4 @@ jobs:
         with:
           files: artifacts/**/*
           generate_release_notes: true
+          overwrite_files: true

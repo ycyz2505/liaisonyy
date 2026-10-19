@@ -2,7 +2,7 @@
 
 杨村一中（杨一）内网聊天系统 · liaison + YangYi
 
-> 0.3.1：自带中文键盘因 bug 暂时下线，文本输入改用系统输入法；PIN/密码页面的自带键盘保留。新增 liaisonyy 用户 QQ 群 1130941127；窗口大小按屏幕分辨率比例自适应。
+> 0.3.2：自动更新改由 **GitHub Releases** 提供（清单/客户端/服务端），内置多个 GitHub 加速源；客户端每次启动强制检查更新，更新成功才能进入；小窗不再自动出现，只能点托盘图标打开，且随时可关闭；服务端也会在启动时自动检查并更新自己，更新状态写在程序同目录的 `update-status.txt`。自带中文键盘仍保持下线，文本输入使用系统输入法；PIN/密码页面键盘保留。
 > 客户端已迁移到 **Tauri 2 + Vue 3 + TypeScript + 纯 CSS**；服务端与 `core` 加密/协议不变。
 > 设计稿见 [设计稿.md](设计稿.md)，使用指南见 [docs/](docs/)。
 
@@ -18,7 +18,7 @@ liaisonyy/
 ├─ crates/
 │  ├─ core/                   # 协议、Argon2id、X25519 信封加密、AES-GCM
 │  ├─ server/                 # axum + SQLite WAL + rustls(ring) + 管理后台
-│  └─ update-sign/            # Ed25519 更新签名工具
+│  └─ update-sign/            # 旧版 Ed25519 签名工具（当前 Releases 流程不使用）
 ├─ client/
 │  ├─ src/                    # Vue 3 + TypeScript 前端
 │  ├─ src-tauri/              # Tauri Rust 后端（复用 net/store）
@@ -74,20 +74,27 @@ npm run build
 - `liaisonyy-server.exe`：服务端（Windows x64）
 - `liaisonyy-server`：服务端（Linux x64，musl 静态）
 
-### 2.4 发布客户端更新
+### 2.4 发布自动更新（GitHub Releases）
 
-```bash
-cargo run -p update-sign -- keygen
-cargo run -p update-sign -- sha256 liaisonyy.exe
-cargo run -p update-sign -- sign 0.3.1 0.3.0 <sha256> <private>
-```
+版本清单与安装包统一放在 GitHub Releases：
 
-- 构建客户端时设置环境变量 `LIAISONYY_UPDATE_PUBKEY=<public>`（CI 里放 GitHub Secret）。
-- 服务端运行时也设置同一个 `LIAISONYY_UPDATE_PUBKEY`，否则拒绝上传更新包。
-- 管理后台「发布客户端更新」填写版本号、最低可用版本、签名并选择 exe；客户端下次启动检查并更新。
-- 可在「更新包地址」填写 GitHub Releases / Cloudflare Pages 等绝对 URL（留空则用本机 `/api/v1/update/package`）。
-- 强制更新：`min_client` 大于客户端当前版本时，客户端必须更新后才能继续。
-- Cloudflare Pages 托管更新包的完整步骤见 [docs/CF-Pages自动更新指南.md](docs/CF-Pages自动更新指南.md)。
+- 清单：`https://github.com/ycyz2505/liaisonyy/releases/latest/download/manifest.json`
+- 客户端：`.../releases/download/v<版本>/liaisonyy.exe`
+- 服务端 Windows：`.../releases/download/v<版本>/liaisonyy-server.exe`
+- 服务端 Linux：`.../releases/download/v<版本>/liaisonyy-server`
+
+发布新版本：
+
+- 打 tag：`git tag v0.3.3 && git push origin v0.3.3`
+- 或 Actions → build → Run workflow，勾选 `publish_update`，填 `version` / `min_client`
+
+`publish-update` 工作流会构建客户端和两个服务端、计算 SHA-256、生成 `manifest.json`（含 `files.windows` 与 `server.windows` / `server.linux`），并创建/更新 GitHub Release。
+
+- 客户端每次启动都会强制检查清单：有更新必须更新成功才能进入；检查失败只能重试，不能跳过。下载会并发尝试直连和内置加速源（`ghfast.top`、`gh-proxy.com`、`ghproxy.net`、`github.moeyy.xyz`），校验 SHA-256 后自替换重启。
+- 服务端启动时也会检查同一份清单：发现新版本会下载、校验并自替换重启；没有命令行/UI，状态写入程序同目录的 `update-status.txt`（不可写时退回数据目录），详细日志在 `data/logs/server.log`。服务端更新失败不会阻止本次启动，下次启动会再试。
+- 更新过程的小窗会显示当前阶段；小窗绝不自动弹出，只能点托盘图标（或按 `Ctrl+Shift+H` / 托盘菜单）打开，关闭按钮随时可用。
+- 0.3.1 及更早客户端没有内置新更新逻辑，需要手动安装一次 0.3.2+。
+- 完整步骤见 [docs/GitHub-Releases自动更新指南.md](docs/GitHub-Releases自动更新指南.md)。
 
 ---
 
@@ -142,7 +149,7 @@ data_dir = "data"
 
 ---
 
-## 4. 0.3.1 实现状态
+## 4. 0.3.2 实现状态
 
 | 模块 | 状态 |
 |---|---|
@@ -161,7 +168,7 @@ data_dir = "data"
 | 管理员聊天解密查看工具（总管/班管托管） | ✅ |
 | TLS 指纹固定（TOFU） | ✅ |
 | UDP 服务发现（多服务端阻断） | ✅ |
-| 签名自动更新（强制/可选） | ✅ |
+| 自动更新（GitHub Releases，客户端+服务端，内置加速源） | ✅ |
 | WebSocket 即时提醒（2 秒轮询兜底） | ✅ |
 | 单实例、老板键 Ctrl+Shift+H、托盘通知 | ✅ |
 | PIN/密码页面自带键盘（中文键盘暂时下线） | ✅ |
@@ -193,7 +200,7 @@ data_dir = "data"
 - 总管理员/班级管理员托管密钥按设计稿实现（内部机制，不对外披露）。
 - 客户端使用自签 TLS + **TOFU 指纹固定**：首次连接记录证书 SHA-256，之后指纹变化会拒绝连接；换服务端证书需由管理员在客户端设置里清除对应指纹后重连。
 - 文本输入使用系统输入法；PIN/密码页面的自带键盘只处理密码/PIN，不加载外部输入法资源。
-- **自动更新**：清单用 Ed25519 签名、更新包校验 SHA-256；构建客户端时设置 `LIAISONYY_UPDATE_PUBKEY`（base64 公钥），服务端运行时也设置同一公钥才允许上传更新包。签名工具见 `crates/update-sign`。
+- **自动更新**：清单与安装包来自 GitHub Releases，下载后校验清单中的 SHA-256；客户端每次启动强制检查，检查失败只能重试；服务端启动时也会自检自更新。下载会并发尝试直连与内置加速源，避免单一源被墙导致卡死。0.3.1 及更早客户端需手动安装一次 0.3.2+。
 - **网络时间**：服务端启动/每小时从 NTP 或 HTTP Date 同步；客户端使用服务端时间 + 单调锚点，修改本机墙钟不影响消息时间和重置密钥剩余时间。
 - 本地缓存只存密文和包裹；退登清除内存密钥。
 - 客户端依赖 WebView2；Tauri 的 webview 不接触密钥，网络/加解密在 Rust 侧。
@@ -207,7 +214,8 @@ data_dir = "data"
 - 自带中文键盘（26/9 键）因 bug 暂时下线；文本输入使用系统输入法，PIN/密码页面键盘保留。
 - 小窗大小按当前屏幕逻辑高度 / 1.7、宽度 = 高度 / 1.79 自适应（高度限制 420–700 逻辑像素），低分辨率或高缩放下会自动缩小。
 - liaisonyy 用户 QQ 群：1130941127（登录后「我」页可复制）。
-- 自动更新仅支持 Windows；需要构建时与服务端同时配置 `LIAISONYY_UPDATE_PUBKEY`。
+- 自动更新需要能访问 GitHub Releases 或内置加速源；客户端启动时若所有源都不可达，会停在「检查更新失败」界面只能重试（这是「必须检查更新」的强制行为）。服务端更新失败只写状态文件并继续用旧版，下次启动再试。
+- 服务端没有命令行/UI，更新状态见程序同目录 `update-status.txt`，日志见 `data/logs/server.log`。
 - TOFU 首次连接仍可能被中间人抢先，之后指纹变化会被拒绝；换证书需管理员手动清除指纹。
 - 客户端分发是 `exe + WebView2Loader.dll` 两个文件（用户已接受）。
 - Tauri 客户端内存约 100–250 MB；服务端仍 < 40 MB。
@@ -222,5 +230,5 @@ data_dir = "data"
 - [学生使用指南](docs/学生使用指南.md)
 - [班级管理员使用指南](docs/班级管理员使用指南.md)
 - [总管理员使用指南](docs/总管理员使用指南.md)
-- [用 Cloudflare Pages 做自动更新](docs/CF-Pages自动更新指南.md)
+- [GitHub Releases 自动更新指南](docs/GitHub-Releases自动更新指南.md)
 - [设计稿](设计稿.md)

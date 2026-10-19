@@ -40,6 +40,7 @@ fn get(agent: &ureq::Agent, url: &str, token: Option<&str>) -> Value {
 fn start(exe: &str, dir: &std::path::Path, port: u16) -> Child {
     Command::new(exe)
         .args(["--data-dir", dir.to_str().unwrap(), "--port", &port.to_string()])
+        .env("LIAISONYY_NO_SELF_UPDATE", "1")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()

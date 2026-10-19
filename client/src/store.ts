@@ -134,6 +134,10 @@ export const state = reactive({
   discovered: [] as DiscoveredServer[],
   discovering: false,
   updateInfo: null as { version: string; mandatory: boolean; url: string; sha256: string } | null,
+  updateGate: "checking" as "checking" | "ready" | "required" | "error",
+  updateError: "",
+  updateApplying: false,
+  updateProgress: "",
   toast: "",
   error: "",
 });
@@ -254,7 +258,6 @@ export function handleEv(ev: Ev): void {
       state.bootstrap = ev.data;
       if (ev.data.setup_required && state.page === "Welcome") state.page = "Setup";
       if (!ev.data.setup_required && state.page === "Setup") state.page = "Welcome";
-      send({ type: "CheckUpdate" });
       break;
     }
     case "Roster":
@@ -525,9 +528,33 @@ export function handleEv(ev: Ev): void {
     }
     case "UpdateInfo":
       state.updateInfo = ev.data;
+      state.updateGate = "required";
+      state.updateError = "";
+      state.updateApplying = false;
+      state.updateProgress = "";
       break;
     case "UpdateNone":
       state.updateInfo = null;
+      state.updateGate = "ready";
+      state.updateError = "";
+      state.updateApplying = false;
+      state.updateProgress = "";
+      break;
+    case "UpdateFailed":
+      state.updateGate = "error";
+      state.updateError = ev.data;
+      state.updateApplying = false;
+      state.updateProgress = "";
+      break;
+    case "UpdateProgress":
+      state.updateApplying = true;
+      state.updateProgress = ev.data;
+      break;
+    case "UpdateApplyFailed":
+      state.updateApplying = false;
+      state.updateProgress = "";
+      state.updateGate = "required";
+      state.error = ev.data;
       break;
     case "Toast":
       showToast(ev.data);
