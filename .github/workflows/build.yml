@@ -138,40 +138,9 @@ jobs:
           path: target/x86_64-pc-windows-msvc/release/liaisonyy-server.exe
           if-no-files-found: error
 
-  server-linux:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-      - name: Use crates.io on CI
-        shell: bash
-        run: |
-          if [ -f .cargo/config.toml ]; then
-            sed -i '/replace-with = "rsproxy-sparse"/d' .cargo/config.toml
-            sed -i '/\[source.rsproxy-sparse\]/,+1d' .cargo/config.toml
-          fi
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-unknown-linux-musl
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: ". -> target"
-      - name: Install musl + NASM
-        run: sudo apt-get update && sudo apt-get install -y musl-tools nasm
-      - name: Build server
-        env:
-          CC_x86_64_unknown_linux_musl: musl-gcc
-        run: cargo build --release -p liaisonyy-server --target x86_64-unknown-linux-musl
-      - uses: actions/upload-artifact@v4
-        with:
-          name: liaisonyy-server-linux
-          path: target/x86_64-unknown-linux-musl/release/liaisonyy-server
-          if-no-files-found: error
-
   publish-update:
     if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish_update)
-    needs: [client, server-windows, server-linux]
+    needs: [client, server-windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -182,10 +151,6 @@ jobs:
         with:
           name: liaisonyy-server-windows
           path: artifact-server-windows
-      - uses: actions/download-artifact@v4
-        with:
-          name: liaisonyy-server-linux
-          path: artifact-server-linux
       - name: Resolve version
         id: ver
         shell: bash
@@ -210,13 +175,10 @@ jobs:
           mkdir -p release
           cp artifact/liaisonyy.exe release/liaisonyy.exe
           cp artifact-server-windows/liaisonyy-server.exe release/liaisonyy-server.exe
-          cp artifact-server-linux/liaisonyy-server release/liaisonyy-server
           CLIENT_SHA=$(openssl dgst -sha256 -binary release/liaisonyy.exe | base64 -w0)
           CLIENT_SIZE=$(stat -c%s release/liaisonyy.exe)
           WIN_SHA=$(openssl dgst -sha256 -binary release/liaisonyy-server.exe | base64 -w0)
           WIN_SIZE=$(stat -c%s release/liaisonyy-server.exe)
-          LINUX_SHA=$(openssl dgst -sha256 -binary release/liaisonyy-server | base64 -w0)
-          LINUX_SIZE=$(stat -c%s release/liaisonyy-server)
           BASE="https://github.com/ycyz2505/liaisonyy/releases/download/v${{ steps.ver.outputs.version }}"
           cat > release/manifest.json <<EOF
           {
@@ -235,11 +197,6 @@ jobs:
                 "url": "$BASE/liaisonyy-server.exe",
                 "sha256": "$WIN_SHA",
                 "size": $WIN_SIZE
-              },
-              "linux": {
-                "url": "$BASE/liaisonyy-server",
-                "sha256": "$LINUX_SHA",
-                "size": $LINUX_SIZE
               }
             }
           }
@@ -251,7 +208,7 @@ jobs:
         shell: bash
         run: |
           TAG="v${{ steps.ver.outputs.version }}"
-          ASSETS="release/liaisonyy.exe release/manifest.json release/liaisonyy-server.exe release/liaisonyy-server"
+          ASSETS="release/liaisonyy.exe release/manifest.json release/liaisonyy-server.exe"
           if gh release view "$TAG" --repo ycyz2505/liaisonyy >/dev/null 2>&1; then
             gh release upload "$TAG" $ASSETS --repo ycyz2505/liaisonyy --clobber
           else
@@ -263,7 +220,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [client, server-windows, server-linux, publish-update]
+    needs: [client, server-windows, publish-update]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

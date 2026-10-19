@@ -13,7 +13,7 @@
 - **小窗绝不自动出现**：取消首次运行自动显示和单实例回调自动显示；只能点托盘图标（或 `Ctrl+Shift+H` / 托盘菜单）打开，界面提供「关闭窗口」按钮，随时可关。
 - **服务端自动更新**：服务端启动时检查同一份清单中的 `server.windows` / `server.linux`，发现新版本会下载、校验 SHA-256、自替换并重启（Windows 用隐藏批处理，Linux 原子替换后 `exec`）。服务端没有命令行/UI，状态写入程序同目录的 `update-status.txt`（不可写时退回数据目录），详细日志写入 `data/logs/server.log`；更新失败不阻止本次启动，下次启动再试。
 - 服务端 `/api/v1/update/manifest` 与 `/api/v1/update/package` 继续代理 GitHub Releases 供老客户端使用；GitHub 不可达时返回 503，不再返回“伪最新”清单。
-- `publish-update` 工作流同时构建并上传客户端、Windows 服务端、Linux 服务端，生成含 `files.windows`、`server.windows`、`server.linux` 的 `manifest.json`。
+- `publish-update` 工作流构建并上传客户端、Windows 服务端，生成含 `files.windows`、`server.windows` 的 `manifest.json`；从 0.3.2 起不再构建/发布 Linux 服务端。
 - 测试环境设置 `LIAISONYY_NO_SELF_UPDATE=1`，避免测试服务端被自动更新替换。
 - 版本 0.3.2。0.3.1 及更早客户端需要手动安装一次 0.3.2，之后即可自动更新。
 

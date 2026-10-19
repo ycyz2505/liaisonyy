@@ -6,9 +6,8 @@ liaisonyy 的版本清单和安装包统一放在 **GitHub Releases**：
 - 最新清单：`https://github.com/ycyz2505/liaisonyy/releases/latest/download/manifest.json`
 - 客户端：`.../releases/download/v<版本>/liaisonyy.exe`
 - 服务端 Windows：`.../releases/download/v<版本>/liaisonyy-server.exe`
-- 服务端 Linux：`.../releases/download/v<版本>/liaisonyy-server`
 
-每次发布只需要创建/更新一个 Release，上传上面四个文件；客户端和服务端都会读取最新清单并更新。
+每次发布只需要创建/更新一个 Release，上传上面三个文件；客户端和服务端都会读取最新清单并更新。0.3.2 起发布构建只做 Windows，Linux 服务端源码保留但不再构建/发布。
 
 ---
 
@@ -16,11 +15,11 @@ liaisonyy 的版本清单和安装包统一放在 **GitHub Releases**：
 
 `.github/workflows/build.yml` 里的 `publish-update` job 会：
 
-1. 等待 `client`、`server-windows`、`server-linux` 三个构建 job；
-2. 收集 `liaisonyy.exe`、`liaisonyy-server.exe`、`liaisonyy-server`；
+1. 等待 `client`、`server-windows` 两个构建 job；
+2. 收集 `liaisonyy.exe`、`liaisonyy-server.exe`；
 3. 分别计算 SHA-256（base64）；
 4. 生成 `manifest.json`（含客户端与服务端条目）；
-5. 创建/更新 GitHub Release（tag `v<version>`），上传四个文件。
+5. 创建/更新 GitHub Release（tag `v<version>`），上传三个文件。
 
 触发方式：
 
@@ -39,7 +38,7 @@ GitHub → **Actions → build → Run workflow**：
 - `version` 填新版本，例如 `0.3.3`
 - `min_client` 填最低可用版本，例如 `0.3.0`
 
-工作流会自动创建 `v0.3.3` Release 并上传四个文件。
+工作流会自动创建 `v0.3.3` Release 并上传三个文件。
 
 > 不需要配置任何签名私钥；清单里的 SHA-256 和 GitHub 的 HTTPS 是当前完整性校验。以后如果需要 Ed25519 签名，可再启用仓库里的 `update-sign` 工具。
 
@@ -64,17 +63,12 @@ GitHub → **Actions → build → Run workflow**：
       "url": "https://github.com/ycyz2505/liaisonyy/releases/download/v0.3.3/liaisonyy-server.exe",
       "sha256": "<Windows 服务端 SHA-256 的 base64>",
       "size": 5620000
-    },
-    "linux": {
-      "url": "https://github.com/ycyz2505/liaisonyy/releases/download/v0.3.3/liaisonyy-server",
-      "sha256": "<Linux 服务端 SHA-256 的 base64>",
-      "size": 6560000
     }
   }
 }
 ```
 
-- 客户端只读 `files.windows`；服务端按平台读 `server.windows` 或 `server.linux`。
+- 客户端只读 `files.windows`；Windows 服务端读 `server.windows`。
 - 下载后都会用清单里的 `sha256` 校验，不匹配就丢弃。
 - `min_client` 保留在清单里；当前客户端策略是「只要清单版本高于当前版本就必须更新」，不区分是否强制。
 
@@ -118,9 +112,8 @@ curl -I -L --max-time 15 "https://ghfast.top/https://github.com/ycyz2505/liaison
 
 ## 5. 服务端行为
 
-- 服务端启动时（日志初始化后、开始服务前）检查同一份清单；发现新版本后下载对应的 `server.windows` / `server.linux`，校验 SHA-256，然后自替换并重启。
-  - Windows：写 `liaisonyy-server-new.exe` + 隐藏批处理，退出旧进程，批处理覆盖 exe 并用原参数启动。
-  - Linux：原子替换当前可执行文件后 `exec` 新版本。
+- Windows 服务端启动时（日志初始化后、开始服务前）检查同一份清单；发现新版本后下载 `server.windows`，校验 SHA-256，然后自替换并重启：写 `liaisonyy-server-new.exe` + 隐藏批处理，退出旧进程，批处理覆盖 exe 并用原参数启动。
+- Linux 服务端源码保留同样的自更新逻辑，但 0.3.2 起发布清单不再提供 Linux 包，因此 Linux 版需要自行编译/手动升级。
 - **没有命令行/UI**：更新状态写入程序同目录的 `update-status.txt`（同目录不可写时退回数据目录），例如：
 
   ```
@@ -142,6 +135,6 @@ curl -I -L --max-time 15 "https://ghfast.top/https://github.com/ycyz2505/liaison
 
 - 0.3.1 及更早客户端没有 GitHub 更新逻辑，需要手动安装一次 0.3.2 或更高版本；之后即可自动更新。
 - Release 必须是 **非预发布（not prerelease）**，`releases/latest` 才会指向它；`gh release create` 默认就是正式发布。
-- Release 资产名必须是 `liaisonyy.exe`、`manifest.json`、`liaisonyy-server.exe`、`liaisonyy-server`（工作流已固定）。
+- Release 资产名必须是 `liaisonyy.exe`、`manifest.json`、`liaisonyy-server.exe`（工作流已固定）。
 - 如果仓库改名或迁移，需要同步修改客户端/服务端里的 `ycyz2505/liaisonyy`。
 - 加速服务是第三方，可能随时失效；客户端会自动跳过失败项。若教室电脑完全无法访问 GitHub 和所有加速源，客户端会停在「检查更新失败」界面（强制检查的预期行为）。
