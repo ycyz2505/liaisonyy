@@ -133,6 +133,7 @@ curl -I -L --max-time 15 "https://ghfast.top/https://github.com/ycyz2505/liaison
 ## 6. 首次上线注意
 
 - 0.3.1 及更早客户端没有 GitHub 更新逻辑，需要手动安装一次 0.3.2 或更高版本；之后即可自动更新。
+- 仓库必须**公开**（或使用一个公开的 releases-only 仓库）。私有仓库的 Release 资产对未登录请求返回 404，客户端和服务端都无法自动更新。`ycyz2505/liaisonyy` 已设为公开。
 - Release 必须是 **非预发布（not prerelease）**，`releases/latest` 才会指向它；`gh release create` 默认就是正式发布。
 - Release 资产名必须是 `liaisonyy.exe`、`manifest.json`、`liaisonyy-server.exe`（工作流已固定）。
 - 如果仓库改名或迁移，需要同步修改客户端/服务端里的 `ycyz2505/liaisonyy`。
