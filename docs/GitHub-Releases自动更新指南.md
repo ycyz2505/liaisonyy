@@ -82,7 +82,6 @@ GitHub → **Actions → build → Run workflow**：
 2. `https://ghfast.top/`
 3. `https://gh-proxy.com/`
 4. `https://ghproxy.net/`
-5. `https://github.moeyy.xyz/`
 
 使用方式是把原始 GitHub URL 拼在前缀后面，例如：
 

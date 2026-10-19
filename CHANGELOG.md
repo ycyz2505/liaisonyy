@@ -7,7 +7,7 @@
 ### 自动更新改由 GitHub Releases 提供（客户端 + 服务端）
 
 - 客户端从 `https://github.com/ycyz2505/liaisonyy/releases/latest/download/manifest.json` 读取版本与安装包地址，安装包从对应 Release 下载；不再依赖 Cloudflare Pages，也不再使用 Ed25519 签名密钥。
-- 内置 GitHub 加速源：`ghfast.top`、`gh-proxy.com`、`ghproxy.net`、`github.moeyy.xyz`；清单与安装包都并发尝试直连和加速源，谁先成功用谁，避免被墙时逐个超时。
+- 内置 GitHub 加速源：`ghfast.top`、`gh-proxy.com`、`ghproxy.net`；清单与安装包都并发尝试直连和加速源，谁先成功用谁，避免被墙时逐个超时。
 - **客户端启动强制检查更新**：每次启动都检查；有更新必须更新成功才能进入；检查失败只能重试，不能跳过。
 - **更新过程有 UI**：小窗显示「检查更新 / 下载 / 校验 / 安装 / 重启」阶段；更新包下载完成后校验 SHA-256，再自替换并重启。
 - **小窗绝不自动出现**：取消首次运行自动显示和单实例回调自动显示；只能点托盘图标（或 `Ctrl+Shift+H` / 托盘菜单）打开，界面提供「关闭窗口」按钮，随时可关。

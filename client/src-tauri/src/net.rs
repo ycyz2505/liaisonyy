@@ -21,7 +21,6 @@ const GITHUB_ACCELERATORS: &[&str] = &[
     "https://ghfast.top/",
     "https://gh-proxy.com/",
     "https://ghproxy.net/",
-    "https://github.moeyy.xyz/",
 ];
 
 #[derive(Clone, Debug, Serialize)]

@@ -3093,7 +3093,6 @@ const GITHUB_ACCELERATORS: &[&str] = &[
     "https://ghfast.top/",
     "https://gh-proxy.com/",
     "https://ghproxy.net/",
-    "https://github.moeyy.xyz/",
 ];
 
 fn fetch_github_manifest_with_timeout(secs: u64) -> Option<Value> {

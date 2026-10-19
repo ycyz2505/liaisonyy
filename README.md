@@ -89,7 +89,7 @@ npm run build
 
 `publish-update` 工作流会构建客户端和 Windows 服务端、计算 SHA-256、生成 `manifest.json`（含 `files.windows` 与 `server.windows`），并创建/更新 GitHub Release。
 
-- 客户端每次启动都会强制检查清单：有更新必须更新成功才能进入；检查失败只能重试，不能跳过。下载会并发尝试直连和内置加速源（`ghfast.top`、`gh-proxy.com`、`ghproxy.net`、`github.moeyy.xyz`），校验 SHA-256 后自替换重启。
+- 客户端每次启动都会强制检查清单：有更新必须更新成功才能进入；检查失败只能重试，不能跳过。下载会并发尝试直连和内置加速源（`ghfast.top`、`gh-proxy.com`、`ghproxy.net`），校验 SHA-256 后自替换重启。
 - 服务端启动时也会检查同一份清单：发现新版本会下载、校验并自替换重启；没有命令行/UI，状态写入程序同目录的 `update-status.txt`（不可写时退回数据目录），详细日志在 `data/logs/server.log`。服务端更新失败不会阻止本次启动，下次启动会再试。
 - 更新过程的小窗会显示当前阶段；小窗绝不自动弹出，只能点托盘图标（或按 `Ctrl+Shift+H` / 托盘菜单）打开，关闭按钮随时可用。
 - 0.3.1 及更早客户端没有内置新更新逻辑，需要手动安装一次 0.3.2+。
