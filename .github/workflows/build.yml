@@ -252,10 +252,11 @@ jobs:
         run: |
           TAG="v${{ steps.ver.outputs.version }}"
           ASSETS="release/liaisonyy.exe release/manifest.json release/liaisonyy-server.exe release/liaisonyy-server"
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" $ASSETS --clobber
+          if gh release view "$TAG" --repo ycyz2505/liaisonyy >/dev/null 2>&1; then
+            gh release upload "$TAG" $ASSETS --repo ycyz2505/liaisonyy --clobber
           else
             gh release create "$TAG" $ASSETS \
+              --repo ycyz2505/liaisonyy \
               --title "liaisonyy ${{ steps.ver.outputs.version }}" \
               --notes "liaisonyy ${{ steps.ver.outputs.version }}"
           fi
