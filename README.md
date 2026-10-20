@@ -2,7 +2,7 @@
 
 杨村一中（杨一）内网聊天系统 · liaison + YangYi
 
-> 0.3.2：自动更新改由 **GitHub Releases** 提供（清单/客户端/服务端），内置多个 GitHub 加速源；客户端每次启动强制检查更新，更新成功才能进入；小窗不再自动出现，只能点托盘图标打开，且随时可关闭；服务端也会在启动时自动检查并更新自己，更新状态写在程序同目录的 `update-status.txt`。自带中文键盘仍保持下线，文本输入使用系统输入法；PIN/密码页面键盘保留。
+> 0.3.3：新增**服务端更新源**。客户端同时查询 GitHub Releases 和服务端 `/api/v1/update/manifest`，在能连上的源里选版本号最高的那个下载；服务端也会在 GitHub 与本地 `data/update/` 之间选最新版本自更新。其余保持 0.3.2：GitHub Releases 自动更新、客户端每次启动强制检查、小窗不自动出现、服务端 `update-status.txt`、仅 Windows 构建。
 > 客户端已迁移到 **Tauri 2 + Vue 3 + TypeScript + 纯 CSS**；服务端与 `core` 加密/协议不变。
 > 设计稿见 [设计稿.md](设计稿.md)，使用指南见 [docs/](docs/)。
 
@@ -74,7 +74,7 @@ npm run build
 
 > 0.3.2 起发布构建只做 Windows；Linux 服务端源码仍保留，但不再由 CI 构建或发布。
 
-### 2.4 发布自动更新（GitHub Releases）
+### 2.4 发布自动更新（GitHub Releases + 服务端）
 
 版本清单与安装包统一放在 GitHub Releases：
 
@@ -84,13 +84,15 @@ npm run build
 
 发布新版本：
 
-- 打 tag：`git tag v0.3.3 && git push origin v0.3.3`
+- 打 tag：`git tag v0.3.4 && git push origin v0.3.4`
 - 或 Actions → build → Run workflow，勾选 `publish_update`，填 `version` / `min_client`
 
 `publish-update` 工作流会构建客户端和 Windows 服务端、计算 SHA-256、生成 `manifest.json`（含 `files.windows` 与 `server.windows`），并创建/更新 GitHub Release。
 
-- 客户端每次启动都会强制检查清单：有更新必须更新成功才能进入；检查失败只能重试，不能跳过。下载会并发尝试直连和内置加速源（`ghfast.top`、`gh-proxy.com`、`ghproxy.net`），校验 SHA-256 后自替换重启。
-- 服务端启动时也会检查同一份清单：发现新版本会下载、校验并自替换重启；没有命令行/UI，状态写入程序同目录的 `update-status.txt`（不可写时退回数据目录），详细日志在 `data/logs/server.log`。服务端更新失败不会阻止本次启动，下次启动会再试。
+- **两个更新源**：客户端同时查询 GitHub Releases（直连 + 加速源）和当前服务端的 `/api/v1/update/manifest`，在能连上的源里选版本号最高的那个下载。服务端会在 GitHub 清单和本地 `data/update/manifest.json` 之间选最高版本，并把客户端包地址改写为 `/api/v1/update/package?source=github|local`。
+- 本地更新源：把客户端清单/包放进 `data/update/`（`manifest.json` + `package.exe`）；服务端自更新的本地清单/包也放这里（`manifest.json` 里加 `server.windows`，包名 `server.exe`）。GitHub 不可达时仍可更新。
+- 客户端每次启动都会强制检查：有更新必须更新成功才能进入；检查失败只能重试，不能跳过。下载会并发尝试直连和内置加速源（`ghfast.top`、`gh-proxy.com`、`ghproxy.net`），校验 SHA-256 后自替换重启。
+- 服务端启动时也会检查两个源：发现新版本会下载、校验并自替换重启；没有命令行/UI，状态写入程序同目录的 `update-status.txt`（不可写时退回数据目录），详细日志在 `data/logs/server.log`。服务端更新失败不会阻止本次启动，下次启动会再试。
 - 更新过程的小窗会显示当前阶段；小窗绝不自动弹出，只能点托盘图标（或按 `Ctrl+Shift+H` / 托盘菜单）打开，关闭按钮随时可用。
 - 仓库必须是**公开**的（当前已公开）；私有仓库的 Release 资产无法被未登录客户端匿名下载（会 404），自动更新会失效。
 - 0.3.1 及更早客户端没有内置新更新逻辑，需要手动安装一次 0.3.2+。

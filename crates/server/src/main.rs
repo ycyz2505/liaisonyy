@@ -3220,24 +3220,80 @@ fn utc_stamp() -> String {
     )
 }
 
-fn version_gt(a: &str, b: &str) -> bool {
-    fn parts(v: &str) -> Vec<u64> {
-        v.trim()
-            .trim_start_matches('v')
-            .split(|c: char| c == '.' || c == '-' || c == '+')
-            .map(|x| x.parse::<u64>().unwrap_or(0))
-            .collect()
-    }
-    let a = parts(a);
-    let b = parts(b);
-    for i in 0..a.len().max(b.len()) {
-        let x = *a.get(i).unwrap_or(&0);
-        let y = *b.get(i).unwrap_or(&0);
-        if x != y {
-            return x > y;
+fn version_key(v: &str) -> Vec<u64> {
+    v.trim()
+        .trim_start_matches('v')
+        .split(|c: char| c == '.' || c == '-' || c == '+')
+        .map(|x| x.parse::<u64>().unwrap_or(0))
+        .collect()
+}
+
+fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    let pa = version_key(a);
+    let pb = version_key(b);
+    for i in 0..pa.len().max(pb.len()) {
+        let x = *pa.get(i).unwrap_or(&0);
+        let y = *pb.get(i).unwrap_or(&0);
+        match x.cmp(&y) {
+            std::cmp::Ordering::Equal => {}
+            other => return other,
         }
     }
-    false
+    std::cmp::Ordering::Equal
+}
+
+fn version_gt(a: &str, b: &str) -> bool {
+    version_cmp(a, b) == std::cmp::Ordering::Greater
+}
+
+fn read_local_manifest(data_dir: &FsPath) -> Option<Value> {
+    let bytes = std::fs::read(data_dir.join("update").join("manifest.json")).ok()?;
+    serde_json::from_slice::<Value>(&bytes).ok()
+}
+
+fn manifest_version(v: &Value) -> Option<String> {
+    let version = v.get("version").and_then(|x| x.as_str())?.trim();
+    if version.is_empty() {
+        None
+    } else {
+        Some(version.to_string())
+    }
+}
+
+fn manifest_client_file(v: &Value) -> Option<(String, String)> {
+    let f = &v["files"]["windows"];
+    let url = f.get("url").and_then(|x| x.as_str()).unwrap_or("");
+    let sha = f.get("sha256").and_then(|x| x.as_str()).unwrap_or("");
+    if url.is_empty() || sha.is_empty() {
+        None
+    } else {
+        Some((url.to_string(), sha.to_string()))
+    }
+}
+
+fn manifest_server_file(v: &Value, platform: &str) -> Option<(String, String)> {
+    let f = &v["server"][platform];
+    let url = f.get("url").and_then(|x| x.as_str()).unwrap_or("");
+    let sha = f.get("sha256").and_then(|x| x.as_str()).unwrap_or("");
+    if url.is_empty() || sha.is_empty() {
+        None
+    } else {
+        Some((url.to_string(), sha.to_string()))
+    }
+}
+
+fn fetch_url_plain(url: &str) -> Option<Vec<u8>> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(90))
+        .build();
+    let resp = agent.get(url).call().ok()?;
+    let mut buf = Vec::new();
+    resp.into_reader().read_to_end(&mut buf).ok()?;
+    if buf.is_empty() || buf.len() > 64 * 1024 * 1024 {
+        None
+    } else {
+        Some(buf)
+    }
 }
 
 /// 服务端没有控制台也没有界面，更新状态写到程序同目录的 update-status.txt，
@@ -3328,57 +3384,90 @@ fn try_self_update(exe_dir: &FsPath, data_dir: &FsPath) {
     if std::env::var("LIAISONYY_NO_SELF_UPDATE").is_ok() {
         return;
     }
-    write_update_status(exe_dir, data_dir, "正在检查更新", "正在连接 GitHub Releases 检查服务端版本…");
-    let Some(manifest) = fetch_github_manifest_parallel(3) else {
+    write_update_status(
+        exe_dir,
+        data_dir,
+        "正在检查更新",
+        "正在检查 GitHub Releases 和服务端本地 data/update 清单…",
+    );
+    let key = if cfg!(windows) { "windows" } else { "linux" };
+    let github = fetch_github_manifest_parallel(3);
+    let local = read_local_manifest(data_dir);
+
+    let mut all_versions: Vec<String> = Vec::new();
+    // (version, from_github, url, sha)
+    let mut candidates: Vec<(String, bool, String, String)> = Vec::new();
+    if let Some(v) = &github {
+        if let Some(ver) = manifest_version(v) {
+            all_versions.push(ver.clone());
+            if let Some((url, sha)) = manifest_server_file(v, key) {
+                candidates.push((ver, true, url, sha));
+            }
+        }
+    }
+    if let Some(v) = &local {
+        if let Some(ver) = manifest_version(v) {
+            all_versions.push(ver.clone());
+            if let Some((url, sha)) = manifest_server_file(v, key) {
+                candidates.push((ver, false, url, sha));
+            }
+        }
+    }
+    if all_versions.is_empty() {
         write_update_status(
             exe_dir,
             data_dir,
             "检查更新失败",
-            "无法连接 GitHub Releases（离线或网络受限），服务继续使用当前版本，下次启动会再次尝试。",
-        );
-        return;
-    };
-    let version = manifest
-        .get("version")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    if version.is_empty() {
-        write_update_status(
-            exe_dir,
-            data_dir,
-            "检查更新失败",
-            "更新清单缺少版本号，已忽略；服务继续使用当前版本。",
+            "无法连接 GitHub Releases，也没有本地 data/update/manifest.json；服务继续使用当前版本，下次启动会再次尝试。",
         );
         return;
     }
+
+    // 在能连上的源里选版本号最高、且带服务端安装包的那个。
+    let mut best: Option<(String, bool, String, String)> = None;
+    for c in candidates {
+        if best
+            .as_ref()
+            .map_or(true, |b| version_cmp(&c.0, &b.0) == std::cmp::Ordering::Greater)
+        {
+            best = Some(c);
+        }
+    }
+    let Some((version, from_github, url, sha)) = best else {
+        let newest = all_versions
+            .into_iter()
+            .max_by(|a, b| version_cmp(a, b))
+            .unwrap_or_default();
+        if version_gt(&newest, APP_VERSION) {
+            write_update_status(
+                exe_dir,
+                data_dir,
+                "发现新版本但缺少服务端安装包",
+                &format!(
+                    "远程版本 {newest}，更新清单中没有 server.{key}；服务继续使用当前版本。"
+                ),
+            );
+        } else {
+            write_update_status(
+                exe_dir,
+                data_dir,
+                "已是最新版本",
+                &format!("远程版本 {newest}，无需更新。"),
+            );
+        }
+        return;
+    };
+    let source = if from_github {
+        "GitHub Releases"
+    } else {
+        "服务端本地 data/update"
+    };
     if !version_gt(&version, APP_VERSION) {
         write_update_status(
             exe_dir,
             data_dir,
             "已是最新版本",
-            &format!("远程版本 {version}，无需更新。"),
-        );
-        return;
-    }
-    let key = if cfg!(windows) { "windows" } else { "linux" };
-    let Some(srv) = manifest.get("server").and_then(|s| s.get(key)) else {
-        write_update_status(
-            exe_dir,
-            data_dir,
-            "发现新版本但缺少服务端安装包",
-            &format!("远程版本 {version}，更新清单中没有 server.{key}，服务继续使用当前版本。"),
-        );
-        return;
-    };
-    let url = srv.get("url").and_then(|v| v.as_str()).unwrap_or("");
-    let sha = srv.get("sha256").and_then(|v| v.as_str()).unwrap_or("");
-    if url.is_empty() || sha.is_empty() {
-        write_update_status(
-            exe_dir,
-            data_dir,
-            "发现新版本但安装包信息不完整",
-            &format!("远程版本 {version}，服务继续使用当前版本。"),
+            &format!("远程版本 {version}（来源：{source}），无需更新。"),
         );
         return;
     }
@@ -3386,14 +3475,25 @@ fn try_self_update(exe_dir: &FsPath, data_dir: &FsPath) {
         exe_dir,
         data_dir,
         "正在下载更新",
-        &format!("发现新版本 {version}，正在从 GitHub Releases（含加速源）下载服务端…"),
+        &format!("发现新版本 {version}（来源：{source}），正在下载服务端…"),
     );
-    let Some(bytes) = fetch_github_asset_parallel(url) else {
+    let bytes = if from_github {
+        fetch_github_asset_parallel(&url)
+    } else if url.starts_with("http://") || url.starts_with("https://") {
+        fetch_url_plain(&url)
+    } else {
+        // 本地清单约定：服务端包放在 data/update/server.exe（Linux 为 server）。
+        let name = if cfg!(windows) { "server.exe" } else { "server" };
+        std::fs::read(data_dir.join("update").join(name)).ok()
+    };
+    let Some(bytes) = bytes else {
         write_update_status(
             exe_dir,
             data_dir,
             "更新下载失败",
-            &format!("新版本 {version} 下载失败，服务继续使用当前版本，下次启动会再次尝试。"),
+            &format!(
+                "新版本 {version}（来源：{source}）下载失败，服务继续使用当前版本，下次启动会再次尝试。"
+            ),
         );
         return;
     };
@@ -3410,7 +3510,7 @@ fn try_self_update(exe_dir: &FsPath, data_dir: &FsPath) {
         exe_dir,
         data_dir,
         "校验通过，正在安装并重启",
-        &format!("新版本 {version} 已下载并通过 SHA-256 校验，服务即将自动重启。"),
+        &format!("新版本 {version}（来源：{source}）已下载并通过 SHA-256 校验，服务即将自动重启。"),
     );
     if let Err(e) = install_server_update(exe_dir, &bytes) {
         write_update_status(
@@ -3423,43 +3523,111 @@ fn try_self_update(exe_dir: &FsPath, data_dir: &FsPath) {
 }
 
 async fn update_manifest(State(state): State<AppState>) -> ApiResult<Json<Value>> {
-    if std::env::var("LIAISONYY_UPDATE_OFFLINE").is_err() {
-        if let Ok(Some(mut v)) = tokio::task::spawn_blocking(fetch_github_manifest).await {
-            // 老客户端仍从服务端读清单：把包地址改为服务端中转，避免它们的自签证书固定拒绝 GitHub 证书。
-            if let Some(w) = v
-                .get_mut("files")
-                .and_then(|f| f.get_mut("windows"))
-                .and_then(|w| w.as_object_mut())
-            {
-                w.insert("url".to_string(), json!("/api/v1/update/package"));
-            }
-            return Ok(Json(v));
-        }
-    }
-    if let Ok(bytes) = std::fs::read(state.data.join("update").join("manifest.json")) {
-        if let Ok(v) = serde_json::from_slice::<Value>(&bytes) {
-            return Ok(Json(v));
-        }
-    }
-    Err(AppError::new(
-        StatusCode::SERVICE_UNAVAILABLE,
-        "update_unavailable",
-        "无法从 GitHub Releases 获取更新清单，请检查服务端网络后重试",
-    ))
-}
-
-async fn update_package(State(state): State<AppState>) -> ApiResult<Response> {
-    let mut bytes = None;
-    if std::env::var("LIAISONYY_UPDATE_OFFLINE").is_err() {
-        bytes = tokio::task::spawn_blocking(fetch_github_package)
+    let github = if std::env::var("LIAISONYY_UPDATE_OFFLINE").is_err() {
+        tokio::task::spawn_blocking(fetch_github_manifest)
             .await
             .ok()
-            .flatten();
+            .flatten()
+    } else {
+        None
+    };
+    let local = read_local_manifest(&state.data);
+
+    // 服务端也是客户端的一个更新源：在 GitHub 与本地 data/update 之间选版本号最高的有效清单。
+    let mut candidates: Vec<(String, bool, Value)> = Vec::new();
+    if let Some(v) = github {
+        if let Some(ver) = manifest_version(&v) {
+            if manifest_client_file(&v).is_some() {
+                candidates.push((ver, true, v));
+            }
+        }
     }
-    let bytes = match bytes {
-        Some(b) => b,
-        None => std::fs::read(state.data.join("update").join("package.exe"))
-            .map_err(|_| AppError::not_found("更新包不存在"))?,
+    if let Some(v) = local {
+        if let Some(ver) = manifest_version(&v) {
+            if manifest_client_file(&v).is_some() {
+                candidates.push((ver, false, v));
+            }
+        }
+    }
+    let mut best: Option<(String, bool, Value)> = None;
+    for c in candidates {
+        if best
+            .as_ref()
+            .map_or(true, |b| version_cmp(&c.0, &b.0) == std::cmp::Ordering::Greater)
+        {
+            best = Some(c);
+        }
+    }
+    let Some((_version, from_github, mut v)) = best else {
+        return Err(AppError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "update_unavailable",
+            "无法从 GitHub Releases 或服务端本地 data/update 获取有效更新清单，请检查网络或本地文件后重试",
+        ));
+    };
+    // 客户端从服务端中转下载，避免自签证书固定拒绝 GitHub 证书；source 让服务端知道该用哪份包。
+    if let Some(w) = v
+        .get_mut("files")
+        .and_then(|f| f.get_mut("windows"))
+        .and_then(|w| w.as_object_mut())
+    {
+        let src = if from_github { "github" } else { "local" };
+        w.insert(
+            "url".to_string(),
+            json!(format!("/api/v1/update/package?source={src}")),
+        );
+    }
+    Ok(Json(v))
+}
+
+#[derive(serde::Deserialize)]
+struct UpdatePackageQuery {
+    source: Option<String>,
+}
+
+async fn update_package(
+    State(state): State<AppState>,
+    Query(q): Query<UpdatePackageQuery>,
+) -> ApiResult<Response> {
+    let local_path = state.data.join("update").join("package.exe");
+    let read_local = || std::fs::read(&local_path);
+    let bytes = match q.source.as_deref() {
+        Some("local") => read_local()
+            .map_err(|_| AppError::not_found("服务端本地更新包不存在（data/update/package.exe）"))?,
+        Some("github") => {
+            if std::env::var("LIAISONYY_UPDATE_OFFLINE").is_ok() {
+                return Err(AppError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "update_unavailable",
+                    "服务端已配置为离线更新模式，无法代理 GitHub 安装包",
+                ));
+            }
+            tokio::task::spawn_blocking(fetch_github_package)
+                .await
+                .ok()
+                .flatten()
+                .ok_or_else(|| {
+                    AppError::new(
+                        StatusCode::BAD_GATEWAY,
+                        "update_unavailable",
+                        "无法从 GitHub Releases 获取更新包",
+                    )
+                })?
+        }
+        _ => {
+            // 兼容旧客户端：优先 GitHub，失败时用本地包。
+            let mut b = None;
+            if std::env::var("LIAISONYY_UPDATE_OFFLINE").is_err() {
+                b = tokio::task::spawn_blocking(fetch_github_package)
+                    .await
+                    .ok()
+                    .flatten();
+            }
+            match b {
+                Some(b) => b,
+                None => read_local().map_err(|_| AppError::not_found("更新包不存在"))?,
+            }
+        }
     };
     Response::builder()
         .status(StatusCode::OK)

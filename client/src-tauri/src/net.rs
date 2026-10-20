@@ -440,17 +440,30 @@ fn spawn_ws(
     });
 }
 
-fn version_gt(a: &str, b: &str) -> bool {
-    let pa: Vec<u64> = a.split('.').map(|x| x.parse().unwrap_or(0)).collect();
-    let pb: Vec<u64> = b.split('.').map(|x| x.parse().unwrap_or(0)).collect();
+fn version_key(v: &str) -> Vec<u64> {
+    v.trim()
+        .trim_start_matches('v')
+        .split(|c: char| c == '.' || c == '-' || c == '+')
+        .map(|x| x.parse::<u64>().unwrap_or(0))
+        .collect()
+}
+
+fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    let pa = version_key(a);
+    let pb = version_key(b);
     for i in 0..pa.len().max(pb.len()) {
         let x = *pa.get(i).unwrap_or(&0);
         let y = *pb.get(i).unwrap_or(&0);
-        if x != y {
-            return x > y;
+        match x.cmp(&y) {
+            std::cmp::Ordering::Equal => {}
+            other => return other,
         }
     }
-    false
+    std::cmp::Ordering::Equal
+}
+
+fn version_gt(a: &str, b: &str) -> bool {
+    version_cmp(a, b) == std::cmp::Ordering::Greater
 }
 
 fn urlencode(s: &str) -> String {
@@ -1051,7 +1064,7 @@ impl Worker {
     }
 
     fn check_update(&self) -> Result<Option<(String, bool, String, String)>, String> {
-        // 并发尝试直连与各加速源，谁先返回有效清单就用谁，避免离线时逐个超时。
+        // 源 1：GitHub Releases（并发尝试直连与各加速源）。
         let (tx, rx) = mpsc::channel::<Value>();
         for prefix in GITHUB_ACCELERATORS {
             let url = format!("{prefix}{GITHUB_MANIFEST_URL}");
@@ -1066,33 +1079,67 @@ impl Worker {
             });
         }
         drop(tx);
-        let manifest = rx.recv_timeout(Duration::from_secs(9)).ok();
-        let v = match manifest {
-            Some(v) => v,
-            None => match self.call("GET", "/api/v1/update/manifest", None, None) {
-                Ok(v) => v,
-                Err(e) => {
-                    return Err(format!(
-                        "无法连接更新服务器（已尝试直连与 GitHub 加速源）：{e}"
-                    ))
-                }
-            },
-        };
-        let version = v.get("version").and_then(|x| x.as_str()).unwrap_or("").to_string();
-        let min_client = v.get("min_client").and_then(|x| x.as_str()).unwrap_or("").to_string();
-        if version.is_empty() {
-            return Err("更新清单无效（缺少版本号）".to_string());
+        let github = rx.recv_timeout(Duration::from_secs(9)).ok();
+
+        // 源 2：当前服务端。服务端会从 GitHub 和本地 data/update 中挑最新的清单。
+        let server = self.call("GET", "/api/v1/update/manifest", None, None).ok();
+
+        let mut manifests: Vec<Value> = Vec::new();
+        if let Some(v) = github {
+            manifests.push(v);
         }
-        if !version_gt(&version, APP_VERSION) {
+        if let Some(v) = server {
+            manifests.push(v);
+        }
+        if manifests.is_empty() {
+            return Err("无法连接更新服务器（已尝试 GitHub、加速源和服务端）".to_string());
+        }
+
+        // 在所有能连上的源里选版本号最高的；同版本保留先到的（GitHub）。
+        let mut best: Option<(String, bool, String, String)> = None;
+        let mut best_version = String::new();
+        for v in manifests {
+            let version = v
+                .get("version")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
+            if version.is_empty() {
+                continue;
+            }
+            if !best_version.is_empty()
+                && version_cmp(&version, &best_version) != std::cmp::Ordering::Greater
+            {
+                continue;
+            }
+            if !version_gt(&version, APP_VERSION) {
+                best = Some((version.clone(), false, String::new(), String::new()));
+                best_version = version;
+                continue;
+            }
+            let file = &v["files"]["windows"];
+            let url = file.get("url").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let sha = file.get("sha256").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            if url.is_empty() || sha.is_empty() {
+                // 最高版本缺少安装包信息，跳过它，继续看下一个源。
+                continue;
+            }
+            let min_client = v
+                .get("min_client")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
+            let mandatory = version_gt(&min_client, APP_VERSION);
+            best = Some((version.clone(), mandatory, url, sha));
+            best_version = version;
+        }
+
+        let Some((version, mandatory, url, sha)) = best else {
+            return Err("更新清单无效（缺少版本号或安装包信息）".to_string());
+        };
+        if url.is_empty() {
             return Ok(None);
         }
-        let file = &v["files"]["windows"];
-        let url = file.get("url").and_then(|x| x.as_str()).unwrap_or("").to_string();
-        let sha = file.get("sha256").and_then(|x| x.as_str()).unwrap_or("").to_string();
-        if url.is_empty() || sha.is_empty() {
-            return Err("更新清单缺少安装包地址或校验值".to_string());
-        }
-        let mandatory = version_gt(&min_client, APP_VERSION);
         Ok(Some((version, mandatory, url, sha)))
     }
 

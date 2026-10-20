@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub const PROTOCOL_VERSION: i64 = 1;
-pub const APP_VERSION: &str = "0.3.2";
+pub const APP_VERSION: &str = "0.3.3";
 
 #[derive(Debug, Error)]
 pub enum CoreError {

@@ -1,13 +1,13 @@
 # GitHub Releases 自动更新（客户端 + 服务端）
 
-liaisonyy 的版本清单和安装包统一放在 **GitHub Releases**：
+liaisonyy 的版本清单和安装包主要放在 **GitHub Releases**，同时支持**服务端本地更新源**（`data/update/`）作为兜底：
 
 - 仓库：`https://github.com/ycyz2505/liaisonyy`
 - 最新清单：`https://github.com/ycyz2505/liaisonyy/releases/latest/download/manifest.json`
 - 客户端：`.../releases/download/v<版本>/liaisonyy.exe`
 - 服务端 Windows：`.../releases/download/v<版本>/liaisonyy-server.exe`
 
-每次发布只需要创建/更新一个 Release，上传上面三个文件；客户端和服务端都会读取最新清单并更新。0.3.2 起发布构建只做 Windows，Linux 服务端源码保留但不再构建/发布。
+每次发布只需要创建/更新一个 Release，上传上面三个文件；客户端和服务端会同时检查 GitHub 和服务端本地源，选版本号最高的那个更新。0.3.2 起发布构建只做 Windows，Linux 服务端源码保留但不再构建/发布。
 
 ---
 
@@ -103,30 +103,39 @@ curl -I -L --max-time 15 "https://ghfast.top/https://github.com/ycyz2505/liaison
 
 ## 4. 客户端行为
 
-- **每次启动强制检查**：客户端启动后立即拉取 `releases/latest/download/manifest.json`；有更新时必须更新成功才能进入，检查失败只能「重试」，不能跳过。
+- **两个更新源**：客户端同时查询 GitHub Releases（直连 + 加速源）和当前服务端 `/api/v1/update/manifest`；在所有能连上的源里选**版本号最高**的那个，再从该源下载。以后新增源也走同一套逻辑。
+- **每次启动强制检查**：有更新时必须更新成功才能进入，检查失败只能「重试」，不能跳过。
 - **更新 UI**：小窗显示「正在检查更新 / 正在下载更新 / 更新包校验通过，正在安装 / 更新已就绪，正在重启」等阶段。
 - **不自动弹窗**：小窗启动时保持隐藏，只能点托盘图标（或 `Ctrl+Shift+H`、托盘菜单）打开；界面始终有「关闭窗口」按钮，随时可隐藏，隐藏后更新检查仍在后台继续。
-- **回退**：如果 GitHub 和所有加速都不可达，客户端请求当前服务端的 `/api/v1/update/manifest`。服务端会从 GitHub 取同一份清单，并把客户端包地址改写为 `/api/v1/update/package`，由服务端中转下载。
+- **服务端源**：服务端会把 GitHub 清单和本地 `data/update/manifest.json` 中版本更高的有效清单返回给客户端，并把包地址改写为 `/api/v1/update/package?source=github|local`，由服务端中转下载。GitHub 完全不可达时，只要服务端本地有清单和包，客户端仍能更新。
 - **自替换**：下载并校验后写 `liaisonyy-new.exe`，用隐藏批处理等待进程退出、覆盖旧 exe、启动新 exe。
 
 ## 5. 服务端行为
 
-- Windows 服务端启动时（日志初始化后、开始服务前）检查同一份清单；发现新版本后下载 `server.windows`，校验 SHA-256，然后自替换并重启：写 `liaisonyy-server-new.exe` + 隐藏批处理，退出旧进程，批处理覆盖 exe 并用原参数启动。
+- Windows 服务端启动时（日志初始化后、开始服务前）同时检查 **GitHub Releases** 和 **本地 `data/update/manifest.json`**，在能连上的源里选版本号最高、且带 `server.windows` 的清单；发现新版本后下载、校验 SHA-256，然后自替换并重启：写 `liaisonyy-server-new.exe` + 隐藏批处理，退出旧进程，批处理覆盖 exe 并用原参数启动。
+- 本地服务端包约定放在 `data/update/server.exe`（Linux 为 `data/update/server`）；本地清单里的 `server.windows.url` 可以是相对路径，也可以是绝对 HTTP(S) URL。
 - Linux 服务端源码保留同样的自更新逻辑，但 0.3.2 起发布清单不再提供 Linux 包，因此 Linux 版需要自行编译/手动升级。
-- **没有命令行/UI**：更新状态写入程序同目录的 `update-status.txt`（同目录不可写时退回数据目录），例如：
+- **没有命令行/UI**：更新状态写入程序同目录的 `update-status.txt`（同目录不可写时退回数据目录），会注明来源，例如：
 
   ```
   liaisonyy 服务端更新状态
-  更新时间: 2026-10-19 03:21:45 UTC
+  更新时间: 2026-10-20 03:21:45 UTC
   当前版本: 0.3.2
   状态: 正在下载更新
-  说明: 发现新版本 0.3.3，正在从 GitHub Releases（含加速源）下载服务端…
+  说明: 发现新版本 0.3.3（来源：GitHub Releases），正在下载服务端…
   ```
 
   详细日志仍在 `data/logs/server.log`。
 - 更新失败不会阻止服务端本次启动；它会继续用旧版本服务，并在下次启动时再试。
-- `/api/v1/update/manifest` 与 `/api/v1/update/package` 继续作为 GitHub Releases 的代理供老客户端使用；GitHub 不可达且本地 `data/update/` 也没有清单时返回 503，不再返回“伪最新”清单。
+- `/api/v1/update/manifest` 与 `/api/v1/update/package` 对老客户端仍然可用：清单会选 GitHub/本地中版本最高的有效项，包接口支持 `?source=github|local`，不带参数时保持旧行为（GitHub 优先、本地兜底）。
 - 测试时设置环境变量 `LIAISONYY_NO_SELF_UPDATE=1` 可禁止服务端自更新；设置 `LIAISONYY_UPDATE_OFFLINE=1` 可让服务端清单/安装包接口跳过 GitHub，只用本地 `data/update/`（仓库内的自动化测试已默认设置这两个变量）。
+
+### 5.1 本地更新源（GitHub 不可达时）
+
+- 客户端：`data/update/manifest.json` + `data/update/package.exe`。管理后台「发布客户端更新」会写这两个文件；也可以手动放入。
+- 服务端自更新：在 `data/update/manifest.json` 里加 `server.windows`，包放 `data/update/server.exe`。
+- 清单里的 `version` 必须高于当前版本才会触发更新；`sha256` 必须与实际文件一致，否则会被丢弃。
+- 本地源和 GitHub 源同时可用时，客户端/服务端会选版本号更高的那个。
 
 ---
 

@@ -2,6 +2,17 @@
 
 本项目遵循「每次改动同步更新文档/设计稿/更新日志」的约定。
 
+## v0.3.3（2026-10-20）
+
+### 新增服务端更新源，按版本号选最新源
+
+- 客户端现在同时查询两个更新源：**GitHub Releases**（直连 + 加速源）和**当前服务端**的 `/api/v1/update/manifest`；在能连上的源里选择版本号最高的那个，再从该源下载。以后新增源也走同一套“取最新版本”逻辑。
+- 服务端 `/api/v1/update/manifest` 不再只代理 GitHub：它在 GitHub 清单和本地 `data/update/manifest.json` 之间选版本号最高的有效清单，并把客户端包地址改写为 `/api/v1/update/package?source=github|local`。
+- `/api/v1/update/package` 支持 `source=github`（代理 GitHub 最新包）和 `source=local`（读取 `data/update/package.exe`）；不带参数时保持旧行为（GitHub 优先，本地兜底）。
+- 服务端自更新同样支持两个源：GitHub Releases 和本地 `data/update/manifest.json`；本地服务端包约定放在 `data/update/server.exe`（Linux 为 `data/update/server`）。状态文件 `update-status.txt` 会注明来源。
+- 本地更新包适合 GitHub 不可达时使用：管理员可把客户端清单/包放进 `data/update/`，或把服务端清单/包放进同一目录；SHA-256 仍会校验。
+- 版本 0.3.3；0.3.2 客户端会自动更新到 0.3.3。
+
 ## v0.3.2（2026-10-19）
 
 ### 自动更新改由 GitHub Releases 提供（客户端 + 服务端）
