@@ -6,7 +6,6 @@ import { formatTime, newId, state } from "../store";
 const listRef = ref<HTMLElement | null>(null);
 
 const convId = computed(() => state.currentConv);
-const conv = computed(() => state.conversations.find((c) => c.id === state.currentConv));
 const msgs = computed(() => (convId.value == null ? [] : state.messages[convId.value] ?? []));
 
 function scrollBottom() {
@@ -68,11 +67,6 @@ onMounted(() => {
 
 <template>
   <div class="chat-page">
-    <div class="chat-head">
-      <button class="link fixed" @click="state.page = 'Main'">‹ 返回</button>
-      <h3>{{ conv?.title || "聊天" }}</h3>
-    </div>
-
     <div ref="listRef" class="chat-list">
       <div
         v-for="m in msgs"
@@ -83,7 +77,7 @@ onMounted(() => {
         <div v-if="!m.mine" class="msg-name">{{ m.sender_name }}</div>
         <div class="bubble">{{ m.text }}</div>
         <div class="msg-time">
-          {{ formatTime(m.created_at) }}<span v-if="m.pending"> ⏳</span>
+          {{ formatTime(m.created_at) }}<span v-if="m.pending"> 发送中</span>
           <button
             v-if="!m.mine && !m.pending"
             class="link report-link"

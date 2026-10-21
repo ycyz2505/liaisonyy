@@ -30,6 +30,5 @@ function submit() {
     <label>新 PIN（可选，4-20 位数字；留空则改为仅密码登录）</label>
     <input v-model="state.resetNewPin" type="password" />
     <button class="primary" @click="submit">重置</button>
-    <button @click="state.page = 'Login'">返回</button>
   </div>
 </template>

@@ -8,10 +8,6 @@ const unread = computed(() => state.notifications.filter((n) => !n.read).length)
 function readAll() {
   send({ type: "MarkNotificationsRead" });
 }
-function back() {
-  state.page = "Main";
-  state.tab = "me";
-}
 </script>
 
 <template>
@@ -30,7 +26,5 @@ function back() {
         <div class="small muted">{{ formatTime(n.created_at) }}</div>
       </div>
     </div>
-
-    <button style="margin-top: 12px" @click="back">返回</button>
   </div>
 </template>

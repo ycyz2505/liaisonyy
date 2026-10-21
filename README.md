@@ -2,7 +2,7 @@
 
 杨村一中（杨一）内网聊天系统 · liaison + YangYi
 
-> 0.3.4：包含 0.3.3 的**服务端更新源**（客户端同时查询 GitHub Releases 和服务端，在能连上的源里选版本号最高的下载；服务端也会在 GitHub 与本地 `data/update/` 之间选最新版本自更新），并修复服务端源查询可能拖慢启动检查的问题（并发 + 5 秒超时）。其余保持 0.3.2：GitHub Releases 自动更新、客户端每次启动强制检查、小窗不自动出现、服务端 `update-status.txt`、仅 Windows 构建。
+> 0.4.0：**全量 UI 重设计**，iOS 风格、严格单色（纯白/纯黑/灰阶）。统一顶部导航栏（左上返回、居中标题、右上关闭）、大标题、分组卡片和底部三标签栏；所有子页面都有返回键，返回目标按层级固定。聊天、资料、管理、登录等全部页面同步重做；不引入 UI/图标库，图标为内联 SVG。自动更新仍为 GitHub Releases + 服务端双源，客户端每次启动强制检查。
 > 客户端已迁移到 **Tauri 2 + Vue 3 + TypeScript + 纯 CSS**；服务端与 `core` 加密/协议不变。
 > 设计稿见 [设计稿.md](设计稿.md)，使用指南见 [docs/](docs/)。
 
@@ -84,7 +84,7 @@ npm run build
 
 发布新版本：
 
-- 打 tag：`git tag v0.3.5 && git push origin v0.3.5`
+- 打 tag：`git tag v0.4.1 && git push origin v0.4.1`
 - 或 Actions → build → Run workflow，勾选 `publish_update`，填 `version` / `min_client`
 
 `publish-update` 工作流会构建客户端和 Windows 服务端、计算 SHA-256、生成 `manifest.json`（含 `files.windows` 与 `server.windows`），并创建/更新 GitHub Release。
@@ -151,7 +151,7 @@ data_dir = "data"
 
 ---
 
-## 4. 0.3.4 实现状态
+## 4. 0.4.0 实现状态
 
 | 模块 | 状态 |
 |---|---|

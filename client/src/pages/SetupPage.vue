@@ -52,6 +52,5 @@ function finishSetup() {
     </div>
 
     <button v-if="!state.recoveryCode" class="primary" @click="submit">初始化</button>
-    <button @click="state.page = 'Welcome'">返回</button>
   </div>
 </template>

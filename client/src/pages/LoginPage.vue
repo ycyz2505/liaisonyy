@@ -55,7 +55,7 @@ function forgot() {
       <input v-model="state.loginKey" placeholder="例如 12 或 zhangsan" />
     </template>
 
-    <div class="row" style="margin-top: 8px">
+    <div class="row segmented" style="margin-top: 8px">
       <button
         :class="{ primary: state.loginKind === 'pin' }"
         :disabled="!canPin"
@@ -87,7 +87,6 @@ function forgot() {
     <button class="primary" style="margin-top: 10px" @click="login">登录</button>
     <div class="row">
       <button class="link" @click="forgot">忘记密码</button>
-      <button class="link" @click="state.page = 'Accounts'">返回账号列表</button>
     </div>
     <p class="hint">PIN 也用于加密，建议至少 6 位、最好 8 位以上。</p>
   </div>

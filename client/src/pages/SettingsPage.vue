@@ -7,10 +7,6 @@ function save() {
   if (!url) return;
   send({ type: "SetServer", data: url });
 }
-
-function back() {
-  state.page = state.user ? "Main" : "Accounts";
-}
 </script>
 
 <template>
@@ -51,7 +47,6 @@ function back() {
       </p>
     </template>
 
-    <button style="margin-top: 10px" @click="back">返回</button>
-    <button class="danger" style="margin-top: 8px" @click="quitApp">退出程序</button>
+    <button class="danger" @click="quitApp">退出程序</button>
   </div>
 </template>

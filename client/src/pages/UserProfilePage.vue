@@ -7,6 +7,9 @@ import Avatar from "../components/Avatar.vue";
 
 const p = computed(() => state.userProfile);
 const bg = computed(() => fileUrl(p.value?.background_file_id));
+const bgStyle = computed(() =>
+  bg.value ? { "--bg-img": `url(${bg.value})` } : {},
+);
 const isSelf = computed(() => p.value?.uid === state.user?.uid);
 
 const roleText = computed(() => {
@@ -32,17 +35,13 @@ function unblock() {
   if (!p.value) return;
   send({ type: "UnblockUser", data: { uid: p.value.uid } });
 }
-function back() {
-  state.page = "Main";
-  state.tab = "contacts";
-}
 </script>
 
 <template>
   <div class="page" v-if="p">
     <div
       class="profile-bg"
-      :style="bg ? { backgroundImage: `url(${bg})` } : {}"
+      :style="bgStyle"
     >
       <div class="profile-head">
         <Avatar :file-id="p.avatar_file_id" :name="p.display_name" :size="64" />
@@ -94,11 +93,8 @@ function back() {
       <button v-if="!p.is_blocked" class="danger" @click="block">拉黑</button>
       <button v-else @click="unblock">解除拉黑</button>
     </template>
-
-    <button style="margin-top: 12px" @click="back">返回</button>
   </div>
   <div class="page" v-else>
     <div class="empty">没有找到这位同学</div>
-    <button @click="back">返回</button>
   </div>
 </template>

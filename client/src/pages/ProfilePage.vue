@@ -7,6 +7,9 @@ import Avatar from "../components/Avatar.vue";
 
 const p = computed(() => state.myProfile);
 const bg = computed(() => fileUrl(p.value?.background_file_id));
+const bgStyle = computed(() =>
+  bg.value ? { "--bg-img": `url(${bg.value})` } : {},
+);
 const isStudent = computed(() => state.user?.role === "student");
 const targetClasses = computed(() =>
   (state.bootstrap?.classes ?? []).filter((c) => c.id !== state.user?.class_id),
@@ -78,11 +81,6 @@ function save() {
   });
 }
 
-function back() {
-  state.page = "Main";
-  state.tab = "me";
-}
-
 function unblock(uid: number) {
   send({ type: "UnblockUser", data: { uid } });
 }
@@ -92,7 +90,7 @@ function unblock(uid: number) {
   <div class="page">
     <div
       class="profile-bg"
-      :style="bg ? { backgroundImage: `url(${bg})` } : {}"
+      :style="bgStyle"
     >
       <div class="profile-bg-actions">
         <label class="upload-btn">
@@ -198,7 +196,5 @@ function unblock(uid: number) {
       <button @click="submitTransfer">提交转班申请</button>
       <div class="hint">需要转出班级和转入班级的管理员都同意；总管理员可一次批准。</div>
     </template>
-
-    <button style="margin-top: 12px" @click="back">返回</button>
   </div>
 </template>

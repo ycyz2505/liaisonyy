@@ -45,18 +45,12 @@ function canDelete(a: { scope: string; class_id: number | null }): boolean {
   if (isRoot.value) return true;
   return a.scope === "class" && a.class_id === state.user?.class_id;
 }
-
-function back() {
-  state.page = "Main";
-  state.tab = "me";
-}
 </script>
 
 <template>
   <div class="page">
     <div class="row" style="align-items: baseline">
       <h2 style="flex: 1">公告</h2>
-      <button class="link fixed" @click="back">返回</button>
     </div>
 
     <template v-if="isAdmin">

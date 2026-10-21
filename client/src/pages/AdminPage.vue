@@ -156,17 +156,12 @@ function createResetKey() {
   if (!uid) return;
   send({ type: "CreateResetKey", data: { uid, expires_minutes: mins } });
 }
-
-function back() {
-  state.page = "Main";
-}
 </script>
 
 <template>
   <div class="page">
     <div class="row" style="align-items: baseline">
       <h2 style="flex: 1">管理</h2>
-      <button class="link fixed" @click="back">返回</button>
     </div>
     <div class="row">
       <button @click="refresh">刷新</button>
@@ -373,7 +368,8 @@ function back() {
       <div class="sep"></div>
       <h3>发布客户端更新</h3>
       <div class="hint">
-        先用 update-sign 计算 sha256 并签名；服务端需配置 LIAISONYY_UPDATE_PUBKEY。
+        GitHub Releases 由 tag 自动发布；本地更新源可把 manifest.json + package.exe 放进服务端
+        data/update/。下面为旧版签名上传（需要 LIAISONYY_UPDATE_PUBKEY）。
       </div>
       <label>版本号</label>
       <input v-model="updVersion" placeholder="0.2.0" />

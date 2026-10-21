@@ -124,7 +124,5 @@ function applyPolicy() {
     <div class="hint">
       修改密码或 PIN 后，其他设备上的登录会自动退出，需要重新登录。
     </div>
-
-    <button style="margin-top: 12px" @click="state.page = 'Profile'">返回资料页</button>
   </div>
 </template>

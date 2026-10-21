@@ -30,8 +30,8 @@ function logout() {
           :name="state.user.display_name"
           :size="48"
         />
-        <div>
-          <div class="account-name" style="font-size: 17px">{{ state.user.display_name }}</div>
+        <div class="grow">
+          <div class="account-name me-name">{{ state.user.display_name }}</div>
           <div class="account-sub">
             UID {{ state.user.uid }} · @{{ state.user.handle }} ·
             {{
@@ -49,7 +49,7 @@ function logout() {
       </div>
     </template>
 
-    <div class="card qq-card">
+    <div class="card">
       <div class="account-name">liaisonyy 用户 QQ 群</div>
       <div class="account-sub">群号：1130941127</div>
       <div class="small muted" style="margin-top: 4px">
@@ -58,9 +58,8 @@ function logout() {
       <button style="margin-top: 8px" @click="copyQQ">复制群号</button>
     </div>
 
-    <button class="primary" style="margin-top: 10px" @click="openProfile">我的资料</button>
+    <button class="primary" @click="openProfile">我的资料</button>
     <button
-      style="margin-top: 8px"
       @click="
         state.page = 'Announcements';
         send({ type: 'Announcements' });
@@ -69,7 +68,6 @@ function logout() {
       公告
     </button>
     <button
-      style="margin-top: 8px"
       @click="
         state.page = 'Notifications';
         send({ type: 'Notifications' });
@@ -77,11 +75,10 @@ function logout() {
     >
       系统通知<template v-if="unread > 0">（{{ unread }}）</template>
     </button>
-    <button style="margin-top: 8px" @click="state.page = 'Security'">密码与 PIN</button>
-    <button style="margin-top: 8px" @click="state.page = 'Settings'">设置</button>
+    <button @click="state.page = 'Security'">密码与 PIN</button>
+    <button @click="state.page = 'Settings'">设置</button>
     <button
       v-if="state.user && (state.user.role === 'root' || state.user.role === 'class_admin')"
-      style="margin-top: 8px"
       @click="
         state.page = 'Admin';
         send({ type: 'AdminStats' });
@@ -93,6 +90,6 @@ function logout() {
     >
       管理
     </button>
-    <button style="margin-top: 8px" @click="logout">退出登录</button>
+    <button class="danger" @click="logout">退出登录</button>
   </div>
 </template>

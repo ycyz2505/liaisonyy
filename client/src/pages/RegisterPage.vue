@@ -69,7 +69,7 @@ onMounted(() => {
     <Keyboard v-model="state.regPassword" />
 
     <label>登录方式</label>
-    <div class="row">
+    <div class="row segmented">
       <button
         :class="{ primary: state.regPolicy === 'pin_allowed' }"
         @click="state.regPolicy = 'pin_allowed'"
@@ -94,6 +94,5 @@ onMounted(() => {
     </template>
 
     <button class="primary" @click="submit">注册</button>
-    <button @click="state.page = 'Accounts'">返回</button>
   </div>
 </template>
