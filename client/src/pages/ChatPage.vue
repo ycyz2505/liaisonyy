@@ -2,11 +2,24 @@
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { send, serverNowSec } from "../api";
 import { formatTime, newId, state } from "../store";
+import Avatar from "../components/Avatar.vue";
 
 const listRef = ref<HTMLElement | null>(null);
 
 const convId = computed(() => state.currentConv);
+const conv = computed(() => state.conversations.find((c) => c.id === state.currentConv));
+const isGroup = computed(() => conv.value?.kind === "class_group");
 const msgs = computed(() => (convId.value == null ? [] : state.messages[convId.value] ?? []));
+const myAvatar = computed(
+  () => state.myProfile?.avatar_file_id ?? state.user?.avatar_file_id ?? null,
+);
+
+function avatarFor(uid: number): number | null {
+  const a = state.accounts.find((x) => x.uid === uid);
+  if (a) return a.avatar_file_id;
+  const f = state.friends.find((x) => x.uid === uid);
+  return f?.avatar_file_id ?? null;
+}
 
 function scrollBottom() {
   nextTick(() => {
@@ -71,21 +84,35 @@ onMounted(() => {
       <div
         v-for="m in msgs"
         :key="m.id + ':' + m.client_msg_id"
-        class="msg"
+        class="msg-row"
         :class="m.mine ? 'mine' : 'other'"
       >
-        <div v-if="!m.mine" class="msg-name">{{ m.sender_name }}</div>
-        <div class="bubble">{{ m.text }}</div>
-        <div class="msg-time">
-          {{ formatTime(m.created_at) }}<span v-if="m.pending"> 发送中</span>
-          <button
-            v-if="!m.mine && !m.pending"
-            class="link report-link"
-            @click="startReport(m.id)"
-          >
-            举报
-          </button>
+        <Avatar
+          v-if="!m.mine"
+          :file-id="avatarFor(m.sender_uid)"
+          :name="m.sender_name"
+          :size="36"
+        />
+        <div class="msg">
+          <div v-if="isGroup && !m.mine" class="msg-name">{{ m.sender_name }}</div>
+          <div class="bubble">{{ m.text }}</div>
+          <div class="msg-time">
+            {{ formatTime(m.created_at) }}<span v-if="m.pending"> 发送中</span>
+            <button
+              v-if="!m.mine && !m.pending"
+              class="link report-link"
+              @click="startReport(m.id)"
+            >
+              举报
+            </button>
+          </div>
         </div>
+        <Avatar
+          v-if="m.mine"
+          :file-id="myAvatar"
+          :name="state.user?.display_name"
+          :size="36"
+        />
       </div>
       <div v-if="msgs.length === 0" class="empty">还没有消息</div>
     </div>

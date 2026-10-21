@@ -43,7 +43,7 @@ export type Page =
   | "UserProfile"
   | "Notifications"
   | "Announcements";
-export type Tab = "messages" | "contacts" | "me";
+export type Tab = "messages" | "contacts" | "discover" | "me";
 
 export const state = reactive({
   page: "Welcome" as Page,

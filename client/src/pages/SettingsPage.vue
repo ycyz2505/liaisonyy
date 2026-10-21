@@ -10,7 +10,7 @@ function save() {
 </script>
 
 <template>
-  <div class="page">
+  <div class="page page-settings">
     <h2>设置</h2>
     <label>服务器地址</label>
     <input v-model="state.serverInput" />

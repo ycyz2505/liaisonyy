@@ -7,6 +7,9 @@ import Avatar from "../components/Avatar.vue";
 
 const myUid = computed(() => state.user?.uid ?? 0);
 const pending = computed(() => state.requests.filter((r) => r.status === "pending"));
+const classGroup = computed(() =>
+  state.conversations.find((c) => c.kind === "class_group"),
+);
 
 function accept(r: FriendRequestView) {
   send({ type: "AcceptFriend", data: { request_id: r.id, from_uid: r.from_uid } });
@@ -28,70 +31,95 @@ function search() {
 function openProfile(uid: number) {
   send({ type: "GetUserProfile", data: { uid } });
 }
+function openClassGroup() {
+  const c = classGroup.value;
+  if (!c) return;
+  state.currentConv = c.id;
+  state.chatInput = "";
+  state.page = "Chat";
+  send({ type: "OpenConversation", data: { conv_id: c.id } });
+}
 </script>
 
 <template>
-  <div>
-    <h3 style="margin-top: 0">找人</h3>
-    <div class="row">
+  <div class="contacts-page">
+    <div class="search-bar">
       <input
         v-model="state.lookupQuery"
-        placeholder="输入 YY 号或 UID"
+        placeholder="YY号 / UID"
         @keyup.enter="search"
       />
-      <button class="fixed" @click="search">查找</button>
+      <button class="search-btn" @click="search">搜索</button>
     </div>
 
-    <div class="sep"></div>
-    <h3 style="margin-top: 0">好友</h3>
+    <div class="cell-group">
+      <button class="cell" @click="openClassGroup">
+        <span class="cell-icon">群</span>
+        <span class="cell-label">班级群</span>
+        <span class="cell-value">{{ classGroup?.title || "暂无" }}</span>
+        <span class="cell-chevron">›</span>
+      </button>
+      <div class="cell cell-static">
+        <span class="cell-icon">新</span>
+        <span class="cell-label">新的朋友</span>
+        <span class="cell-value">{{ pending.length > 0 ? pending.length : "" }}</span>
+      </div>
+    </div>
+
+    <template v-if="pending.length > 0">
+      <div class="section-title">新的朋友</div>
+      <div class="cell-group">
+        <div v-for="r in pending" :key="r.id" class="cell cell-request">
+          <Avatar :name="r.incoming ? r.from_name : r.to_name" :size="42" />
+          <span class="grow">
+            <span class="cell-label">{{ r.incoming ? r.from_name : r.to_name }}</span>
+            <span class="cell-sub">
+              {{ r.incoming ? "请求加你" : "等待对方同意" }}
+              <template v-if="r.incoming && r.message">：{{ r.message }}</template>
+            </span>
+          </span>
+          <template v-if="r.incoming">
+            <button class="mini-btn mini-primary" @click="accept(r)">同意</button>
+            <button class="mini-btn" @click="decline(r)">拒绝</button>
+          </template>
+        </div>
+      </div>
+    </template>
+
+    <div class="section-title">好友</div>
     <div v-if="state.friends.length === 0" class="empty">还没有好友</div>
-    <div
-      v-for="f in state.friends"
-      :key="f.uid"
-      class="friend-row clickable"
-      @click="openProfile(f.uid)"
-    >
-      <Avatar :file-id="f.avatar_file_id" :name="f.display_name" />
-      <div class="grow">
-        <div class="account-name">{{ f.display_name }}</div>
-        <div class="account-sub">@{{ f.handle }} · UID {{ f.uid }}</div>
-      </div>
+    <div v-else class="cell-group">
+      <button
+        v-for="f in state.friends"
+        :key="f.uid"
+        class="cell"
+        @click="openProfile(f.uid)"
+      >
+        <Avatar :file-id="f.avatar_file_id" :name="f.display_name" :size="42" />
+        <span class="grow">
+          <span class="cell-label">{{ f.display_name }}</span>
+          <span class="cell-sub">@{{ f.handle }} · UID {{ f.uid }}</span>
+        </span>
+        <span class="cell-chevron">›</span>
+      </button>
     </div>
 
-    <div class="sep"></div>
-    <h3 style="margin-top: 0">新的朋友</h3>
-    <div v-if="pending.length === 0" class="empty">没有待处理的好友申请</div>
-    <div v-for="r in pending" :key="r.id" class="request-row">
-      <div class="row">
-        <div class="grow">
-          <b>{{ r.incoming ? r.from_name : r.to_name }}</b>
-          <span class="muted small">{{ r.incoming ? " 请求加你" : " 等待对方同意" }}</span>
-        </div>
-        <template v-if="r.incoming">
-          <button class="fixed" @click="accept(r)">同意</button>
-          <button class="fixed" @click="decline(r)">拒绝</button>
-        </template>
+    <div class="section-title">本班同学</div>
+    <div class="cell-group">
+      <div
+        v-for="a in state.accounts.filter((x) => x.uid !== myUid)"
+        :key="a.uid"
+        class="cell"
+      >
+        <button class="cell-main" @click="openProfile(a.uid)">
+          <Avatar :file-id="a.avatar_file_id" :name="a.display_name" :size="42" />
+          <span class="grow">
+            <span class="cell-label">{{ a.display_name }}</span>
+            <span class="cell-sub">@{{ a.handle }} · UID {{ a.uid }}</span>
+          </span>
+        </button>
+        <button class="mini-btn" @click="addFriend(a)">加好友</button>
       </div>
-      <div v-if="r.incoming && r.message" class="request-msg">附言：{{ r.message }}</div>
-    </div>
-
-    <div class="sep"></div>
-    <h3 style="margin-top: 0">本班同学</h3>
-    <label>附言</label>
-    <input v-model="state.friendMsg" placeholder="加好友时附一句话" />
-    <div
-      v-for="a in state.accounts.filter((x) => x.uid !== myUid)"
-      :key="a.uid"
-      class="friend-row"
-    >
-      <div class="clickable-row" @click="openProfile(a.uid)" style="display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0">
-        <Avatar :file-id="a.avatar_file_id" :name="a.display_name" />
-        <div class="grow">
-          <div class="account-name">{{ a.display_name }}</div>
-          <div class="account-sub">@{{ a.handle }} · UID {{ a.uid }}</div>
-        </div>
-      </div>
-      <button class="fixed" @click="addFriend(a)">加好友</button>
     </div>
     <div v-if="state.accounts.length <= 1" class="empty">本班还没有其他账号</div>
   </div>

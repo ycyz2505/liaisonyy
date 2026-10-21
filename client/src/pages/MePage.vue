@@ -5,6 +5,9 @@ import { showToast, state } from "../store";
 import Avatar from "../components/Avatar.vue";
 
 const unread = computed(() => state.notifications.filter((n) => !n.read).length);
+const isAdmin = computed(
+  () => state.user?.role === "root" || state.user?.role === "class_admin",
+);
 
 function openProfile() {
   send({ type: "GetMyProfile" });
@@ -16,80 +19,91 @@ function copyQQ() {
   showToast("群号已复制：1130941127");
 }
 
+function openAnnouncements() {
+  state.page = "Announcements";
+  send({ type: "Announcements" });
+}
+
+function openNotifications() {
+  state.page = "Notifications";
+  send({ type: "Notifications" });
+}
+
+function openAdmin() {
+  state.page = "Admin";
+  send({ type: "AdminStats" });
+  if (state.user?.role === "root") {
+    send({ type: "AdminAudit" });
+    send({ type: "AdminClasses" });
+  }
+}
+
 function logout() {
   send({ type: "Logout" });
 }
 </script>
 
 <template>
-  <div>
+  <div class="me-page">
     <template v-if="state.user">
-      <div class="card profile-card" @click="openProfile">
+      <button class="me-header" @click="openProfile">
         <Avatar
           :file-id="state.myProfile?.avatar_file_id ?? state.user.avatar_file_id"
           :name="state.user.display_name"
-          :size="48"
+          :size="62"
         />
-        <div class="grow">
-          <div class="account-name me-name">{{ state.user.display_name }}</div>
-          <div class="account-sub">
-            UID {{ state.user.uid }} · @{{ state.user.handle }} ·
-            {{
-              state.user.role === "root"
-                ? "总管理员"
-                : state.user.role === "class_admin"
-                  ? "班级管理员"
-                  : "学生"
-            }}
-          </div>
-          <div class="account-sub">
-            登录方式：{{ state.user.login_policy === "pin_allowed" ? "PIN 或密码" : "仅密码" }}
-          </div>
-        </div>
-      </div>
+        <span class="grow">
+          <span class="me-name">{{ state.user.display_name }}</span>
+          <span class="me-id">YY号：{{ state.user.handle }}</span>
+        </span>
+        <span class="cell-chevron">›</span>
+      </button>
     </template>
 
-    <div class="card">
-      <div class="account-name">liaisonyy 用户 QQ 群</div>
-      <div class="account-sub">群号：1130941127</div>
-      <div class="small muted" style="margin-top: 4px">
-        遇到问题、想反馈 bug 或获取新版本通知，欢迎加群。
-      </div>
-      <button style="margin-top: 8px" @click="copyQQ">复制群号</button>
+    <div class="cell-group">
+      <button class="cell" @click="openProfile">
+        <span class="cell-label">我的资料</span>
+        <span class="cell-chevron">›</span>
+      </button>
+      <button class="cell" @click="openAnnouncements">
+        <span class="cell-label">公告</span>
+        <span class="cell-chevron">›</span>
+      </button>
+      <button class="cell" @click="openNotifications">
+        <span class="cell-label">系统通知</span>
+        <span class="cell-value">{{ unread > 0 ? unread : "" }}</span>
+        <span class="cell-chevron">›</span>
+      </button>
     </div>
 
-    <button class="primary" @click="openProfile">我的资料</button>
-    <button
-      @click="
-        state.page = 'Announcements';
-        send({ type: 'Announcements' });
-      "
-    >
-      公告
-    </button>
-    <button
-      @click="
-        state.page = 'Notifications';
-        send({ type: 'Notifications' });
-      "
-    >
-      系统通知<template v-if="unread > 0">（{{ unread }}）</template>
-    </button>
-    <button @click="state.page = 'Security'">密码与 PIN</button>
-    <button @click="state.page = 'Settings'">设置</button>
-    <button
-      v-if="state.user && (state.user.role === 'root' || state.user.role === 'class_admin')"
-      @click="
-        state.page = 'Admin';
-        send({ type: 'AdminStats' });
-        if (state.user?.role === 'root') {
-          send({ type: 'AdminAudit' });
-          send({ type: 'AdminClasses' });
-        }
-      "
-    >
-      管理
-    </button>
-    <button class="danger" @click="logout">退出登录</button>
+    <div class="cell-group">
+      <button class="cell" @click="state.page = 'Security'">
+        <span class="cell-label">密码与 PIN</span>
+        <span class="cell-chevron">›</span>
+      </button>
+      <button class="cell" @click="state.page = 'Settings'">
+        <span class="cell-label">设置</span>
+        <span class="cell-chevron">›</span>
+      </button>
+      <button v-if="isAdmin" class="cell" @click="openAdmin">
+        <span class="cell-label">管理</span>
+        <span class="cell-chevron">›</span>
+      </button>
+    </div>
+
+    <div class="cell-group">
+      <button class="cell" @click="copyQQ">
+        <span class="cell-label">liaisonyy 用户 QQ 群</span>
+        <span class="cell-value">1130941127</span>
+      </button>
+    </div>
+
+    <div class="cell-group">
+      <button class="cell cell-danger" @click="logout">
+        <span class="cell-label">退出登录</span>
+      </button>
+    </div>
+
+    <div class="me-footer">liaisonyy · 杨村一中内网聊天</div>
   </div>
 </template>

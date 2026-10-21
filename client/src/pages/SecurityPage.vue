@@ -75,7 +75,7 @@ function applyPolicy() {
 </script>
 
 <template>
-  <div class="page">
+  <div class="page page-security">
     <h2>密码与 PIN</h2>
     <div class="hint">
       密码用于找回和修改安全设置；PIN 更方便，但越短越容易被猜到，建议 6 位以上。

@@ -18,7 +18,13 @@ const title = computed(() => {
     case "Reset":
       return "重置密码";
     case "Main":
-      return "liaisonyy";
+      return state.tab === "messages"
+        ? "消息"
+        : state.tab === "contacts"
+          ? "通讯录"
+          : state.tab === "discover"
+            ? "发现"
+            : "我";
     case "Chat":
       return state.conversations.find((c) => c.id === state.currentConv)?.title || "聊天";
     case "Settings":
@@ -69,11 +75,13 @@ function back() {
       break;
     case "Profile":
     case "Security":
-    case "Notifications":
-    case "Announcements":
     case "Admin":
       state.page = "Main";
       state.tab = "me";
+      break;
+    case "Notifications":
+    case "Announcements":
+      state.page = "Main";
       break;
     case "UserProfile":
       state.page = "Main";
@@ -87,7 +95,7 @@ function back() {
 
 <template>
   <header class="topbar">
-    <button v-if="showBack" class="nav-back" @click="back">‹ 返回</button>
+    <button v-if="showBack" class="nav-back" title="返回" @click="back">‹</button>
     <span v-else class="nav-spacer"></span>
     <div class="nav-center">
       <span class="nav-title">{{ title }}</span>
