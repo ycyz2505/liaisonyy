@@ -89,6 +89,9 @@ npm run build
 
 `publish-update` 工作流会构建客户端和 Windows 服务端、计算 SHA-256、生成 `manifest.json`（含 `files.windows` 与 `server.windows`），并创建/更新 GitHub Release。
 
+- **自动发布**：推送到 `main` 后，只要 `test`、`client`、`server-windows` 全部通过，工作流会读取 `Cargo.toml` 的版本号；若 `v<版本>` Release 不存在，自动创建 tag + Release 并上传 `liaisonyy.exe`、`WebView2Loader.dll`、`liaisonyy-server.exe`、`manifest.json`；已存在则跳过。这样即使 agent 在 CI 期间终止，版本也会自动发布。
+- 打 tag 或手动 `publish_update` 仍可用，并会强制覆盖已有 Release 资产。
+
 - **两个更新源**：客户端同时查询 GitHub Releases（直连 + 加速源）和当前服务端的 `/api/v1/update/manifest`，在能连上的源里选版本号最高的那个下载。服务端会在 GitHub 清单和本地 `data/update/manifest.json` 之间选最高版本，并把客户端包地址改写为 `/api/v1/update/package?source=github|local`。
 - 本地更新源：把客户端清单/包放进 `data/update/`（`manifest.json` + `package.exe`）；服务端自更新的本地清单/包也放这里（`manifest.json` 里加 `server.windows`，包名 `server.exe`）。GitHub 不可达时仍可更新。
 - 客户端每次启动都会强制检查：有更新必须更新成功才能进入；检查失败只能重试，不能跳过。下载会并发尝试直连和内置加速源（`ghfast.top`、`gh-proxy.com`、`ghproxy.net`），校验 SHA-256 后自替换重启。

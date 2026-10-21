@@ -139,8 +139,8 @@ jobs:
           if-no-files-found: error
 
   publish-update:
-    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish_update)
-    needs: [client, server-windows]
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish_update) || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    needs: [test, client, server-windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -157,8 +157,10 @@ jobs:
         run: |
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             VERSION="${GITHUB_REF_NAME#v}"
-          else
+          elif [[ -n "${{ inputs.version }}" ]]; then
             VERSION="${{ inputs.version }}"
+          else
+            VERSION=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)
           fi
           if [[ -z "$VERSION" ]]; then
             echo "version is required" >&2
@@ -174,6 +176,7 @@ jobs:
           set -e
           mkdir -p release
           cp artifact/liaisonyy.exe release/liaisonyy.exe
+          cp artifact/WebView2Loader.dll release/WebView2Loader.dll
           cp artifact-server-windows/liaisonyy-server.exe release/liaisonyy-server.exe
           CLIENT_SHA=$(openssl dgst -sha256 -binary release/liaisonyy.exe | base64 -w0)
           CLIENT_SIZE=$(stat -c%s release/liaisonyy.exe)
@@ -207,15 +210,23 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
+          set -e
           TAG="v${{ steps.ver.outputs.version }}"
-          ASSETS="release/liaisonyy.exe release/manifest.json release/liaisonyy-server.exe"
+          ASSETS="release/liaisonyy.exe release/WebView2Loader.dll release/manifest.json release/liaisonyy-server.exe"
           if gh release view "$TAG" --repo ycyz2505/liaisonyy >/dev/null 2>&1; then
-            gh release upload "$TAG" $ASSETS --repo ycyz2505/liaisonyy --clobber
+            if [[ "${GITHUB_REF}" == refs/tags/v* || "${{ inputs.publish_update }}" == "true" ]]; then
+              gh release upload "$TAG" $ASSETS --repo ycyz2505/liaisonyy --clobber
+            else
+              echo "release $TAG already exists; auto-publish skipped"
+            fi
           else
-            gh release create "$TAG" $ASSETS \
-              --repo ycyz2505/liaisonyy \
+            ARGS=(release create "$TAG" $ASSETS --repo ycyz2505/liaisonyy \
               --title "liaisonyy ${{ steps.ver.outputs.version }}" \
-              --notes "liaisonyy ${{ steps.ver.outputs.version }}"
+              --notes "liaisonyy ${{ steps.ver.outputs.version }}")
+            if [[ "${GITHUB_REF}" == refs/heads/main ]]; then
+              ARGS+=(--target "$GITHUB_SHA")
+            fi
+            gh "${ARGS[@]}"
           fi
 
   release:

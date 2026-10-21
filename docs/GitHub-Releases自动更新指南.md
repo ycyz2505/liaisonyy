@@ -15,30 +15,40 @@ liaisonyy 的版本清单和安装包主要放在 **GitHub Releases**，同时�
 
 `.github/workflows/build.yml` 里的 `publish-update` job 会：
 
-1. 等待 `client`、`server-windows` 两个构建 job；
-2. 收集 `liaisonyy.exe`、`liaisonyy-server.exe`；
+1. 等待 `test`、`client`、`server-windows` 三个 job 全部通过；
+2. 收集 `liaisonyy.exe`、`WebView2Loader.dll`、`liaisonyy-server.exe`；
 3. 分别计算 SHA-256（base64）；
 4. 生成 `manifest.json`（含客户端与服务端条目）；
-5. 创建/更新 GitHub Release（tag `v<version>`），上传三个文件。
+5. 创建/更新 GitHub Release（tag `v<version>`），上传四个文件。
 
 触发方式：
 
-### 方式 A：打 tag
+### 方式 A：推送到 main（自动发布，推荐）
+
+把 `Cargo.toml` 的 `version` 改成新版本后提交并推送 `main`。CI 全部通过后会自动：
+
+- 读取 `Cargo.toml` 的版本号；
+- 如果 `v<version>` Release 不存在，自动创建 tag + Release，并上传四个文件；
+- 如果 Release 已存在，跳过，不会覆盖。
+
+这样即使负责发版的人/agent 在 CI 期间离开，Release 也会自动生成。
+
+### 方式 B：打 tag
 
 ```bash
-git tag v0.3.3
-git push origin v0.3.3
+git tag v0.4.2
+git push origin v0.4.2
 ```
 
-### 方式 B：手动运行
+### 方式 C：手动运行
 
 GitHub → **Actions → build → Run workflow**：
 
 - `publish_update` 勾选
-- `version` 填新版本，例如 `0.3.3`
+- `version` 填新版本，例如 `0.4.2`
 - `min_client` 填最低可用版本，例如 `0.3.0`
 
-工作流会自动创建 `v0.3.3` Release 并上传三个文件。
+tag 和手动方式会强制覆盖已有 Release 的同名资产；main 自动发布只创建缺失的 Release。
 
 > 不需要配置任何签名私钥；清单里的 SHA-256 和 GitHub 的 HTTPS 是当前完整性校验。以后如果需要 Ed25519 签名，可再启用仓库里的 `update-sign` 工具。
 
