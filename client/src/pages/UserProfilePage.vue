@@ -8,7 +8,7 @@ import Avatar from "../components/Avatar.vue";
 const p = computed(() => state.userProfile);
 const bg = computed(() => fileUrl(p.value?.background_file_id));
 const bgStyle = computed(() =>
-  bg.value ? { "--bg-img": `url(${bg.value})` } : {},
+  bg.value ? { backgroundImage: `url(${bg.value})` } : {},
 );
 const isSelf = computed(() => p.value?.uid === state.user?.uid);
 

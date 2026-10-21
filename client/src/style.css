@@ -559,7 +559,6 @@ label {
   height: 100%;
   object-fit: cover;
   border-radius: 50%;
-  filter: grayscale(1);
 }
 
 .conv-row .avatar {
@@ -756,31 +755,22 @@ label {
 .profile-bg {
   position: relative;
   border-radius: 14px;
-  padding: 16px;
+  padding: 12px;
   overflow: hidden;
-  background: var(--fill-2);
-  margin: 4px 0 12px;
-}
-
-.profile-bg::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background-image: var(--bg-img, none);
+  background-color: var(--fill-2);
   background-size: cover;
   background-position: center;
-  filter: grayscale(1);
-  opacity: 0.22;
-}
-
-.profile-bg > * {
-  position: relative;
+  margin: 4px 0 12px;
 }
 
 .profile-head {
   display: flex;
   align-items: center;
   gap: 12px;
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.78);
+  backdrop-filter: blur(12px);
 }
 
 .profile-name {
@@ -794,6 +784,12 @@ label {
   display: flex;
   justify-content: flex-end;
   margin-bottom: 10px;
+}
+
+.profile-bg-actions .upload-btn {
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(10px);
+  border-color: transparent;
 }
 
 .upload-btn {

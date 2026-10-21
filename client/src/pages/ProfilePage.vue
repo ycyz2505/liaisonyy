@@ -8,7 +8,7 @@ import Avatar from "../components/Avatar.vue";
 const p = computed(() => state.myProfile);
 const bg = computed(() => fileUrl(p.value?.background_file_id));
 const bgStyle = computed(() =>
-  bg.value ? { "--bg-img": `url(${bg.value})` } : {},
+  bg.value ? { backgroundImage: `url(${bg.value})` } : {},
 );
 const isStudent = computed(() => state.user?.role === "student");
 const targetClasses = computed(() =>
