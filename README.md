@@ -55,7 +55,7 @@ Tauri 客户端需要 Windows MSVC；本机磁盘不够装 MSVC，因此官方�
 - `server-windows` job：Windows MSVC 服务端
 - tag `v*` 时自动创建 Release
 
-> 0.3.3 最终 CI run 39449407473 全绿：test 1m34s、server-windows 2m27s、client 4m45s、publish-update 9s、release 10s。发布构建只做 Windows。
+> 0.3.4 最终 CI run 39615805820 全绿：test 3m0s、server-windows 2m59s、client 4m4s、publish-update 6s、release 7s。发布构建只做 Windows。
 
 本地只构建前端（无需 MSVC）：
 
