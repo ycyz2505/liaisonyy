@@ -3095,23 +3095,6 @@ const GITHUB_ACCELERATORS: &[&str] = &[
     "https://ghproxy.net/",
 ];
 
-fn fetch_github_manifest_with_timeout(secs: u64) -> Option<Value> {
-    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(secs)).build();
-    for prefix in GITHUB_ACCELERATORS {
-        let url = format!("{prefix}{GITHUB_UPDATE_MANIFEST}");
-        if let Ok(resp) = agent.get(&url).call() {
-            if let Ok(v) = resp.into_json::<Value>() {
-                return Some(v);
-            }
-        }
-    }
-    None
-}
-
-fn fetch_github_manifest() -> Option<Value> {
-    fetch_github_manifest_with_timeout(6)
-}
-
 /// 服务端启动自更新用：并发尝试直连和加速源，谁先返回用谁，避免离线时逐个超时拖慢启动。
 fn fetch_github_manifest_parallel(secs: u64) -> Option<Value> {
     let (tx, rx) = std::sync::mpsc::channel::<Value>();
@@ -3524,7 +3507,7 @@ fn try_self_update(exe_dir: &FsPath, data_dir: &FsPath) {
 
 async fn update_manifest(State(state): State<AppState>) -> ApiResult<Json<Value>> {
     let github = if std::env::var("LIAISONYY_UPDATE_OFFLINE").is_err() {
-        tokio::task::spawn_blocking(fetch_github_manifest)
+        tokio::task::spawn_blocking(|| fetch_github_manifest_parallel(3))
             .await
             .ok()
             .flatten()

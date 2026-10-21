@@ -1082,7 +1082,21 @@ impl Worker {
         let github = rx.recv_timeout(Duration::from_secs(9)).ok();
 
         // 源 2：当前服务端。服务端会从 GitHub 和本地 data/update 中挑最新的清单。
-        let server = self.call("GET", "/api/v1/update/manifest", None, None).ok();
+        // 并发请求，避免服务端不可达时拖慢启动检查。
+        let (stx, srx) = mpsc::channel::<Value>();
+        {
+            let agent = self.agent.clone();
+            let base = self.base.clone();
+            thread::spawn(move || {
+                let url = format!("{}/api/v1/update/manifest", base.trim_end_matches('/'));
+                if let Ok(resp) = agent.get(&url).timeout(Duration::from_secs(5)).call() {
+                    if let Ok(v) = resp.into_json::<Value>() {
+                        let _ = stx.send(v);
+                    }
+                }
+            });
+        }
+        let server = srx.recv_timeout(Duration::from_secs(5)).ok();
 
         let mut manifests: Vec<Value> = Vec::new();
         if let Some(v) = github {

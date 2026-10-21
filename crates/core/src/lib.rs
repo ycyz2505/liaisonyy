@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub const PROTOCOL_VERSION: i64 = 1;
-pub const APP_VERSION: &str = "0.3.3";
+pub const APP_VERSION: &str = "0.3.4";
 
 #[derive(Debug, Error)]
 pub enum CoreError {
@@ -840,3 +840,4 @@ pub struct ResetRequest {
     pub profile_own: String,
     pub profile_pin: Option<String>,
 }
+

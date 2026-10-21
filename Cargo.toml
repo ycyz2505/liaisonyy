@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/core", "crates/server", "crates/update-sign", "client/src-tauri"]
 
 [workspace.package]
-version = "0.3.3"
+version = "0.3.4"
 edition = "2021"
 
 [workspace.dependencies]
@@ -16,3 +16,4 @@ lto = "thin"
 codegen-units = 1
 strip = true
 panic = "abort"
+
